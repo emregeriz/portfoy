@@ -153,3 +153,64 @@ export interface NetWorthRow {
   total_liabilities_try: number
   net_worth_try: number
 }
+
+// --------------------------------------------------------------------
+// Halka arz — arz, hesap katılımı ve hesaplardaki para hareketleri
+// (eski ipo_participations tablosu yerini bu üçlüye bıraktı)
+// --------------------------------------------------------------------
+export type IpoState = 'talep_verildi' | 'dagitildi' | 'islemde' | 'satildi' | 'iptal'
+export type LedgerKind = 'iade' | 'satis' | 'cekim' | 'diger'
+
+export interface IpoRow {
+  id: string
+  user_id: string
+  name: string
+  bist_code: string | null
+  ipo_date: string | null
+  lot_price: number | null
+  status: IpoState
+  manual_price: number | null
+  sold_date: string | null
+  sold_price: number | null
+  note: string | null
+  created_at: string
+}
+
+export interface IpoEntry {
+  id: string
+  user_id: string
+  ipo_id: string
+  account_id: string
+  requested_lot: number
+  participated: boolean
+  allocated_lot: number
+  created_at: string
+}
+
+/** v_ipo_entries — tutarlar arzın lot fiyatından türetilir */
+export interface IpoEntryView extends Omit<IpoEntry, 'created_at'> {
+  ipo_name: string
+  status: IpoState
+  lot_price: number | null
+  requested_amount: number
+  cost: number
+  refund: number
+}
+
+export interface LedgerRow {
+  id: string
+  user_id: string
+  account_id: string
+  ipo_id: string | null
+  kind: LedgerKind
+  amount: number
+  date: string
+  note: string | null
+  created_at: string
+}
+
+export interface AccountBalance {
+  account_id: string
+  balance: number
+  last_move: string | null
+}

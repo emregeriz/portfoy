@@ -5,6 +5,7 @@ import { tr } from 'date-fns/locale'
 import { useAuth } from '../hooks/useAuth'
 import { useNetWorth, useSnapshots, usePositionsForSnapshots } from '../hooks/useSnapshots'
 import { usePrices } from '../hooks/usePrices'
+import { useIpos, ipoStats } from '../hooks/useIpos'
 import UserTabs from '../components/UserTabs'
 import StatCard from '../components/StatCard'
 import NetWorthChart, { type ChartPoint } from '../components/NetWorthChart'
@@ -77,7 +78,28 @@ export default function Dashboard() {
 
   const netChange = change(last?.net_worth_try ?? 0, prev?.net_worth_try)
 
-  const { byAssetId, latestDate, refreshing, refresh, error: priceError } = usePrices()
+  const { byAssetId, bySymbol, latestDate, refreshing, refresh, error: priceError } = usePrices()
+  const { ipos, entries, totalWaiting } = useIpos(isTotal ? null : effectiveScope)
+
+  /**
+   * Halka arz hesaplarındaki para portföyün parçası: bekleyen nakit +
+   * henüz satılmamış arzların güncel değeri.
+   */
+  const ipoTotal = useMemo(() => {
+    const held = ipos
+      .filter((i) => i.status === 'dagitildi' || i.status === 'islemde')
+      .reduce((s, i) => {
+        const code = i.bist_code?.trim().toUpperCase()
+        const price = i.manual_price != null
+          ? Number(i.manual_price)
+          : code && bySymbol.get(code)
+            ? Number(bySymbol.get(code)!.price)
+            : null
+        const st = ipoStats(i, entries, price)
+        return s + (st.holding ?? st.cost)
+      }, 0)
+    return { waiting: totalWaiting, held, total: totalWaiting + held }
+  }, [ipos, entries, bySymbol, totalWaiting])
 
   /**
    * Son snapshot'taki adetler güncel fiyatlarla değerlenir.
@@ -100,7 +122,9 @@ export default function Dashboard() {
     return { total, priced, count: positions.length }
   }, [positions, byAssetId])
 
-  const liveNet = live ? live.total - (last?.total_liabilities_try ?? 0) : null
+  const liveAssets = (live?.total ?? last?.total_assets_try ?? 0) + ipoTotal.total
+  const showLive = (live && live.priced > 0) || ipoTotal.total > 0
+  const liveNet = showLive ? liveAssets - (last?.total_liabilities_try ?? 0) : null
   const liveChange = liveNet != null ? change(liveNet, last?.net_worth_try) : null
 
   return (
@@ -163,7 +187,7 @@ export default function Dashboard() {
         />
       </div>
 
-      {live && live.priced > 0 && (
+      {showLive && (
         <Card
           title="Şu Anki Tahmini Değer"
           actions={
@@ -185,13 +209,24 @@ export default function Dashboard() {
               </p>
             </div>
             <div>
-              <p className="text-lg text-ink">{formatTRY(live.total)}</p>
+              <p className="text-lg text-ink">{formatTRY(liveAssets)}</p>
               <p className="text-xs text-muted">Toplam varlık</p>
             </div>
+            {ipoTotal.total > 0 && (
+              <div>
+                <p className="text-lg text-ink">{formatTRY(ipoTotal.total)}</p>
+                <p className="text-xs text-muted">
+                  Hesaplarda {formatTRY(ipoTotal.waiting)} nakit
+                  {ipoTotal.held > 0 && ` + ${formatTRY(ipoTotal.held)} halka arz hissesi`}
+                </p>
+              </div>
+            )}
             <div className="text-xs text-muted">
-              <p>
-                {live.priced}/{live.count} kalem güncel fiyatla değerlendi
-              </p>
+              {live && (
+                <p>
+                  {live.priced}/{live.count} kalem güncel fiyatla değerlendi
+                </p>
+              )}
               <p>Fiyat tarihi: {latestDate ?? '—'}</p>
             </div>
           </div>
