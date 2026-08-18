@@ -57,7 +57,7 @@ export default function Compare() {
                 key={p}
                 onClick={() => setPeriod(p)}
                 className={`px-3 py-1.5 rounded-md text-sm ${
-                  period === p ? 'bg-surface2 text-slate-100' : 'text-muted hover:text-slate-200'
+                  period === p ? 'bg-surface2 text-ink' : 'text-muted hover:text-ink'
                 }`}
               >
                 {PERIOD_LABELS[p]}

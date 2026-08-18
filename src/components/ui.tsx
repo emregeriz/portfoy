@@ -35,7 +35,7 @@ export function Card({
     <section className={`card ${className}`}>
       {(title || actions) && (
         <header className="flex items-center justify-between gap-2 mb-3">
-          {title && <h2 className="text-sm font-semibold text-slate-200">{title}</h2>}
+          {title && <h2 className="text-sm font-semibold text-ink">{title}</h2>}
           {actions}
         </header>
       )}
@@ -71,7 +71,7 @@ export function Badge({ children, tone = 'muted' }: { children: ReactNode; tone?
     pos: 'bg-pos/15 text-pos border-pos/30',
     neg: 'bg-neg/15 text-neg border-neg/30',
     accent: 'bg-accent/15 text-accent border-accent/30',
-    warn: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+    warn: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30',
   }
   return (
     <span
@@ -107,7 +107,7 @@ export function Modal({
       >
         <header className="flex items-center justify-between px-4 py-3 border-b border-border">
           <h3 className="font-semibold text-sm">{title}</h3>
-          <button onClick={onClose} className="text-muted hover:text-slate-100 text-lg leading-none">
+          <button onClick={onClose} className="text-muted hover:text-ink text-lg leading-none">
             ×
           </button>
         </header>

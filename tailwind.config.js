@@ -1,17 +1,19 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
+  darkMode: 'class',
   theme: {
     extend: {
       colors: {
-        bg: '#0b0f17',
-        surface: '#121826',
-        surface2: '#1a2233',
-        border: '#243047',
-        muted: '#8b9ab3',
-        accent: '#4f8cff',
-        pos: '#22c55e',
-        neg: '#ef4444',
+        bg: 'rgb(var(--c-bg) / <alpha-value>)',
+        surface: 'rgb(var(--c-surface) / <alpha-value>)',
+        surface2: 'rgb(var(--c-surface2) / <alpha-value>)',
+        border: 'rgb(var(--c-border) / <alpha-value>)',
+        muted: 'rgb(var(--c-muted) / <alpha-value>)',
+        ink: 'rgb(var(--c-ink) / <alpha-value>)',
+        accent: 'rgb(var(--c-accent) / <alpha-value>)',
+        pos: 'rgb(var(--c-pos) / <alpha-value>)',
+        neg: 'rgb(var(--c-neg) / <alpha-value>)',
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', 'Segoe UI', 'sans-serif'],

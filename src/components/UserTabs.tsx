@@ -37,7 +37,7 @@ export default function UserTabs({
             key={t.key}
             onClick={() => onChange(t.key)}
             className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-              active ? 'text-white' : 'text-muted hover:text-slate-200'
+              active ? 'text-white' : 'text-muted hover:text-ink'
             }`}
             style={active ? { background: t.color } : undefined}
           >

@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 import { useAuth } from '../hooks/useAuth'
+import { useTheme } from '../hooks/useTheme'
 
 const NAV = [
   { to: '/', label: 'Dashboard', end: true },
@@ -15,6 +16,7 @@ const NAV = [
 
 export default function Layout() {
   const { profile, user, signOut } = useAuth()
+  const { theme, toggle } = useTheme()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
 
@@ -27,7 +29,7 @@ export default function Layout() {
     <div className="min-h-full flex flex-col">
       <header className="sticky top-0 z-20 bg-surface/95 backdrop-blur border-b border-border">
         <div className="mx-auto max-w-7xl px-4 h-14 flex items-center gap-4">
-          <NavLink to="/" className="font-semibold tracking-tight text-slate-100 shrink-0">
+          <NavLink to="/" className="font-semibold tracking-tight text-ink shrink-0">
             ₺ Portföy
           </NavLink>
 
@@ -39,7 +41,7 @@ export default function Layout() {
                 end={item.end}
                 className={({ isActive }) =>
                   `px-3 py-1.5 rounded-lg text-sm transition-colors ${
-                    isActive ? 'bg-accent/15 text-accent' : 'text-muted hover:text-slate-100 hover:bg-surface2'
+                    isActive ? 'bg-accent/15 text-accent' : 'text-muted hover:text-ink hover:bg-surface2'
                   }`
                 }
               >
@@ -63,6 +65,14 @@ export default function Layout() {
               />
               {profile?.display_name ?? user?.email ?? '—'}
             </span>
+            <button
+              onClick={toggle}
+              className="btn-ghost text-xs"
+              aria-label="Tema değiştir"
+              title={theme === 'dark' ? 'Aydınlık tema' : 'Karanlık tema'}
+            >
+              {theme === 'dark' ? '☀️' : '🌙'}
+            </button>
             <button onClick={handleSignOut} className="btn-ghost text-xs">
               Çıkış
             </button>

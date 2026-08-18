@@ -1,8 +1,10 @@
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import { colorAt, type Slice } from '../lib/calc'
 import { formatTRY } from '../lib/currency'
+import { useChartColors } from '../hooks/useTheme'
 
 export default function AllocationPie({ data }: { data: Slice[] }) {
+  const cc = useChartColors()
   const total = data.reduce((s, d) => s + d.value, 0)
 
   if (!data.length) {
@@ -28,8 +30,8 @@ export default function AllocationPie({ data }: { data: Slice[] }) {
           </Pie>
           <Tooltip
             contentStyle={{
-              background: '#1a2233',
-              border: '1px solid #243047',
+              background: cc.tooltipBg,
+              border: `1px solid ${cc.tooltipBorder}`,
               borderRadius: 8,
               fontSize: 12,
             }}
@@ -42,7 +44,7 @@ export default function AllocationPie({ data }: { data: Slice[] }) {
         {data.map((d, i) => (
           <li key={d.key} className="flex items-center gap-2 text-sm">
             <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: colorAt(i) }} />
-            <span className="text-slate-200 truncate">{d.label}</span>
+            <span className="text-ink truncate">{d.label}</span>
             <span className="ml-auto num text-muted">
               {total ? ((d.value / total) * 100).toFixed(1).replace('.', ',') : '0'}%
             </span>

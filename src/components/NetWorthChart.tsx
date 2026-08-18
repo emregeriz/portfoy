@@ -12,6 +12,7 @@ import {
 import { format, parseISO } from 'date-fns'
 import { tr } from 'date-fns/locale'
 import { formatCompactTRY, formatTRY } from '../lib/currency'
+import { useChartColors } from '../hooks/useTheme'
 
 export interface SeriesDef {
   key: string
@@ -30,8 +31,6 @@ interface Props {
   height?: number
   type?: 'area' | 'line'
 }
-
-const axisStyle = { fill: '#8b9ab3', fontSize: 11 }
 
 function TooltipBox({ active, payload, label }: any) {
   if (!active || !payload?.length) return null
@@ -52,6 +51,9 @@ function TooltipBox({ active, payload, label }: any) {
 }
 
 export default function NetWorthChart({ data, series, height = 300, type = 'area' }: Props) {
+  const cc = useChartColors()
+  const axisStyle = { fill: cc.tick, fontSize: 11 }
+
   if (!data.length) {
     return (
       <div className="h-[300px] grid place-items-center text-sm text-muted">
@@ -71,12 +73,12 @@ export default function NetWorthChart({ data, series, height = 300, type = 'area
             </linearGradient>
           ))}
         </defs>
-        <CartesianGrid stroke="#243047" strokeDasharray="3 3" vertical={false} />
+        <CartesianGrid stroke={cc.grid} strokeDasharray="3 3" vertical={false} />
         <XAxis
           dataKey="date"
           tick={axisStyle}
           tickLine={false}
-          axisLine={{ stroke: '#243047' }}
+          axisLine={{ stroke: cc.grid }}
           tickFormatter={(v) => format(parseISO(String(v)), 'd MMM', { locale: tr })}
           minTickGap={24}
         />
@@ -88,7 +90,7 @@ export default function NetWorthChart({ data, series, height = 300, type = 'area
           tickFormatter={(v) => formatCompactTRY(Number(v))}
         />
         <Tooltip content={<TooltipBox />} />
-        {series.length > 1 && <Legend wrapperStyle={{ fontSize: 12, color: '#8b9ab3' }} />}
+        {series.length > 1 && <Legend wrapperStyle={{ fontSize: 12, color: cc.legend }} />}
         {series.map((s) =>
           type === 'area' ? (
             <Area

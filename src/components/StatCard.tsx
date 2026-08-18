@@ -11,7 +11,7 @@ interface Props {
 
 export default function StatCard({ title, value, change, hint, tone = 'neutral' }: Props) {
   const valueClass =
-    tone === 'pos' ? 'text-pos' : tone === 'neg' ? 'text-neg' : 'text-slate-100'
+    tone === 'pos' ? 'text-pos' : tone === 'neg' ? 'text-neg' : 'text-ink'
 
   return (
     <div className="card">

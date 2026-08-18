@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider, useAuth } from './hooks/useAuth'
+import { ThemeProvider } from './hooks/useTheme'
 import Layout from './components/Layout'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
@@ -21,22 +22,24 @@ function Protected() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route element={<Protected />}>
-          <Route index element={<Dashboard />} />
-          <Route path="snapshot/new" element={<NewSnapshot />} />
-          <Route path="snapshot/:id/edit" element={<NewSnapshot />} />
-          <Route path="history" element={<History />} />
-          <Route path="accounts" element={<Accounts />} />
-          <Route path="ipo" element={<Ipo />} />
-          <Route path="transactions" element={<Transactions />} />
-          <Route path="debts" element={<Debts />} />
-          <Route path="compare" element={<Compare />} />
-        </Route>
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route element={<Protected />}>
+            <Route index element={<Dashboard />} />
+            <Route path="snapshot/new" element={<NewSnapshot />} />
+            <Route path="snapshot/:id/edit" element={<NewSnapshot />} />
+            <Route path="history" element={<History />} />
+            <Route path="accounts" element={<Accounts />} />
+            <Route path="ipo" element={<Ipo />} />
+            <Route path="transactions" element={<Transactions />} />
+            <Route path="debts" element={<Debts />} />
+            <Route path="compare" element={<Compare />} />
+          </Route>
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </AuthProvider>
+    </ThemeProvider>
   )
 }

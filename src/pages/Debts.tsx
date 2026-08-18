@@ -137,7 +137,7 @@ export default function Debts() {
           <button
             onClick={() => setTab('alacak')}
             className={`px-3 py-1.5 rounded-md text-sm ${
-              tab === 'alacak' ? 'bg-surface2 text-slate-100' : 'text-muted'
+              tab === 'alacak' ? 'bg-surface2 text-ink' : 'text-muted'
             }`}
           >
             Verdiğim Borçlar
@@ -145,7 +145,7 @@ export default function Debts() {
           <button
             onClick={() => setTab('borc')}
             className={`px-3 py-1.5 rounded-md text-sm ${
-              tab === 'borc' ? 'bg-surface2 text-slate-100' : 'text-muted'
+              tab === 'borc' ? 'bg-surface2 text-ink' : 'text-muted'
             }`}
           >
             Borçlarım

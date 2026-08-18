@@ -13,6 +13,7 @@ import {
 } from 'recharts'
 import { useAuth } from '../hooks/useAuth'
 import { useAccounts } from '../hooks/useAccounts'
+import { useChartColors } from '../hooks/useTheme'
 import { useTable } from '../hooks/useTable'
 import UserTabs from '../components/UserTabs'
 import StatCard from '../components/StatCard'
@@ -34,6 +35,7 @@ const CATEGORIES: { value: TxCategory; label: string }[] = [
 const catLabel = (c: TxCategory) => CATEGORIES.find((x) => x.value === c)?.label ?? c
 
 export default function Transactions() {
+  const cc = useChartColors()
   const { profiles, user } = useAuth()
   const [scope, setScope] = useState<string>(user?.id ?? '')
   const effectiveScope = scope || user?.id || ''
@@ -168,32 +170,32 @@ export default function Transactions() {
         ) : (
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={chartData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
-              <CartesianGrid stroke="#243047" strokeDasharray="3 3" vertical={false} />
+              <CartesianGrid stroke={cc.grid} strokeDasharray="3 3" vertical={false} />
               <XAxis
                 dataKey="month"
-                tick={{ fill: '#8b9ab3', fontSize: 11 }}
+                tick={{ fill: cc.tick, fontSize: 11 }}
                 tickLine={false}
-                axisLine={{ stroke: '#243047' }}
+                axisLine={{ stroke: cc.grid }}
                 tickFormatter={(v) => format(parseISO(String(v) + '-01'), 'MMM yy', { locale: tr })}
               />
               <YAxis
-                tick={{ fill: '#8b9ab3', fontSize: 11 }}
+                tick={{ fill: cc.tick, fontSize: 11 }}
                 tickLine={false}
                 axisLine={false}
                 width={70}
                 tickFormatter={(v) => formatCompactTRY(Number(v))}
               />
               <Tooltip
-                cursor={{ fill: '#ffffff08' }}
+                cursor={{ fill: cc.cursor }}
                 contentStyle={{
-                  background: '#1a2233',
-                  border: '1px solid #243047',
+                  background: cc.tooltipBg,
+                  border: `1px solid ${cc.tooltipBorder}`,
                   borderRadius: 8,
                   fontSize: 12,
                 }}
                 formatter={(v: any, n: any) => [formatTRY(Number(v)), n]}
               />
-              <Legend wrapperStyle={{ fontSize: 12, color: '#8b9ab3' }} />
+              <Legend wrapperStyle={{ fontSize: 12, color: cc.legend }} />
               {chartCats.map((c, i) => (
                 <Bar key={c} dataKey={c} stackId="gider" fill={colorAt(i)} radius={[0, 0, 0, 0]} />
               ))}
