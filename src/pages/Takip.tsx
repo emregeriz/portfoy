@@ -3,14 +3,14 @@ import { format, parseISO } from 'date-fns'
 import { tr } from 'date-fns/locale'
 import { useAuth } from '../hooks/useAuth'
 import { useTable } from '../hooks/useTable'
+import { useTakipItems } from '../hooks/useTakipItems'
 import StatCard from '../components/StatCard'
+import NumberInput from '../components/NumberInput'
 import NetWorthChart, { type ChartPoint } from '../components/NetWorthChart'
 import { Card, Empty, ErrorBox, Modal, PageHeader, Spinner } from '../components/ui'
 import { change, todayISO } from '../lib/calc'
-import { formatPercent, formatTRY, parseAmount } from '../lib/currency'
+import { formatPercent, formatTRY, parseTRInput, toTRInput } from '../lib/currency'
 import type { TakipEntry, TakipExpense } from '../types/db'
-
-const DEFAULT_ITEMS = ['Annem', 'Babam', 'Mablam', 'Nablam', 'Garanti', 'Ziraat', 'Midas', 'Tera']
 
 const sumItems = (items: Record<string, number> | null | undefined) =>
   Object.values(items ?? {}).reduce((s, v) => s + Number(v || 0), 0)
@@ -76,19 +76,19 @@ function EntryForm({
   const [rows, setRows] = useState<FormRow[]>(() =>
     itemNames.map((n) => ({
       name: n,
-      value: entry?.items?.[n] != null ? String(entry.items[n]) : '',
+      value: toTRInput(entry?.items?.[n]),
     }))
   )
-  const [debt, setDebt] = useState(entry && Number(entry.debt) !== 0 ? String(entry.debt) : '')
+  const [debt, setDebt] = useState(entry && Number(entry.debt) !== 0 ? toTRInput(entry.debt) : '')
   const [note, setNote] = useState(entry?.note ?? '')
   const [expRows, setExpRows] = useState<{ desc: string; amount: string }[]>(() =>
-    (entry?.expenses ?? []).map((x) => ({ desc: x.desc, amount: String(x.amount) }))
+    (entry?.expenses ?? []).map((x) => ({ desc: x.desc, amount: toTRInput(x.amount) }))
   )
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const total = rows.reduce((s, r) => s + parseAmount(r.value), 0)
-  const net = total - parseAmount(debt)
+  const total = rows.reduce((s, r) => s + parseTRInput(r.value), 0)
+  const net = total - parseTRInput(debt)
 
   const setRow = (i: number, patch: Partial<FormRow>) =>
     setRows((prev) => prev.map((r, j) => (j === i ? { ...r, ...patch } : r)))
@@ -101,16 +101,16 @@ function EntryForm({
     for (const r of rows) {
       const name = r.name.trim()
       if (!name || r.value.trim() === '') continue
-      items[name] = parseAmount(r.value)
+      items[name] = parseTRInput(r.value)
     }
     const expenses: TakipExpense[] = expRows
       .filter((r) => r.desc.trim() || r.amount.trim())
-      .map((r) => ({ desc: r.desc.trim(), amount: parseAmount(r.amount) }))
+      .map((r) => ({ desc: r.desc.trim(), amount: parseTRInput(r.amount) }))
     try {
       await onSave({
         entry_date: date,
         items,
-        debt: parseAmount(debt),
+        debt: parseTRInput(debt),
         expenses,
         note: note.trim() || null,
       })
@@ -150,12 +150,11 @@ function EntryForm({
               ) : (
                 <span className="w-32 shrink-0 text-sm text-muted">{r.name}</span>
               )}
-              <input
-                inputMode="decimal"
+              <NumberInput
                 placeholder="0"
                 className="w-full text-right num"
                 value={r.value}
-                onChange={(e) => setRow(i, { value: e.target.value })}
+                onChange={(v) => setRow(i, { value: v })}
               />
             </div>
           ))}
@@ -172,13 +171,12 @@ function EntryForm({
       <div className="grid gap-3 sm:grid-cols-2">
         <div>
           <label className="label" htmlFor="takip-debt">Borç</label>
-          <input
+          <NumberInput
             id="takip-debt"
-            inputMode="decimal"
             placeholder="0"
             className="w-full text-right num"
             value={debt}
-            onChange={(e) => setDebt(e.target.value)}
+            onChange={setDebt}
           />
         </div>
         <div>
@@ -207,13 +205,12 @@ function EntryForm({
                     setExpRows((prev) => prev.map((x, j) => (j === i ? { ...x, desc: e.target.value } : x)))
                   }
                 />
-                <input
-                  inputMode="decimal"
+                <NumberInput
                   placeholder="0"
                   className="w-32 shrink-0 text-right num"
                   value={r.amount}
-                  onChange={(e) =>
-                    setExpRows((prev) => prev.map((x, j) => (j === i ? { ...x, amount: e.target.value } : x)))
+                  onChange={(v) =>
+                    setExpRows((prev) => prev.map((x, j) => (j === i ? { ...x, amount: v } : x)))
                   }
                 />
                 <button
@@ -271,14 +268,15 @@ export default function Takip() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<TakipEntry | null>(null)
 
-  // Varsayılan kalemler + geçmiş kayıtlarda kullanılan tüm kalem adları
+  // Kullanıcının kendi kalem listesi + geçmiş kayıtlarında geçen adlar
+  const { names: ownItems, addItems } = useTakipItems(user?.id)
   const itemNames = useMemo(() => {
-    const names = [...DEFAULT_ITEMS]
+    const names = [...ownItems]
     for (const e of rows) {
       for (const k of Object.keys(e.items ?? {})) if (!names.includes(k)) names.push(k)
     }
     return names
-  }, [rows])
+  }, [rows, ownItems])
 
   const computed = useMemo(
     () =>
@@ -360,6 +358,9 @@ export default function Takip() {
   const save = async (values: EntryValues) => {
     if (editing) await update(editing.id, values)
     else await insert({ ...values, user_id: user?.id })
+    // Bu kayıtta geçen yeni kalem adları listeye eklensin ki bir dahaki
+    // girişte hazır gelsin
+    await addItems(Object.keys(values.items))
   }
 
   const missingTable = error != null && /takip_entries/.test(error)
