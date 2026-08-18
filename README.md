@@ -37,6 +37,51 @@ npm run dev
 > `anon key` public'tir, sorun değil — güvenliği RLS sağlar.
 > **`service_role` anahtarını asla frontend'e koyma.**
 
+## 1b. Otomatik fiyat çekme
+
+Adet girdiğin kalemlerin tutarı güncel fiyattan hesaplanır. Kaynaklar:
+
+| Tür | Kaynak | Not |
+|---|---|---|
+| Döviz | TCMB `today.xml` | Resmî, hafta içi ~15:30 |
+| Altın / gümüş | Truncgil | Gram, çeyrek, yarım, tam, ons, has |
+| Kripto | CoinGecko | Ücretsiz, anahtar gerekmez |
+| BIST hisse | Yahoo Finance | Sembol + `.IS` |
+| Fon (TEFAS) | [Fonoloji](https://fonoloji.com/api-docs) | API anahtarı gerekir |
+
+Bu kaynaklar CORS göndermediği için tarayıcıdan doğrudan çağrılamaz;
+çekme işini `supabase/functions/fetch-prices` Edge Function'ı yapar.
+
+### Kurulum
+
+1. **SQL Editor** → [`supabase/prices.sql`](supabase/prices.sql) çalıştır
+   (`asset_prices` tablosu, `v_latest_prices` / `v_latest_fx` görünümleri).
+2. Fon fiyatı istiyorsan [fonoloji.com](https://fonoloji.com/api-docs) → ücretsiz
+   API anahtarı al (15.000 kayıt/ay).
+3. Edge Function'ı kur:
+
+   ```bash
+   npx supabase link --project-ref <proje-ref>
+   npx supabase secrets set FONOLOJI_API_KEY=fon_...
+   npx supabase functions deploy fetch-prices
+   ```
+
+   CLI kullanmak istemezsen: **Edge Functions → Deploy a new function** →
+   dosyanın içeriğini yapıştır; anahtarı **Edge Functions → Secrets**'a ekle.
+4. İsteğe bağlı — günlük otomatik çalıştırma için
+   [`supabase/cron.sql`](supabase/cron.sql) (önce `pg_cron` + `pg_net` eklentilerini aç).
+
+### Kullanım
+
+- **Yeni Giriş → "↻ Güncel fiyatları çek"** — adet girilmiş satırların tutarını
+  `adet × birim fiyat` yapar, döviz satırlarında kuru tazeler.
+- **Dashboard → "Şu Anki Tahmini Değer"** — son snapshot'ın adetleri bugünkü
+  fiyatlarla değerlenir; snapshot oluşturmadan güncel durumu gösterir.
+
+Bir varlığın sembolü kaynaktaki adla eşleşmiyorsa `assets.price_ref` alanına
+kaynağın kimliğini yaz (örn. kripto için CoinGecko id'si, hisse için `THYAO.IS`).
+Otomasyonun dokunmasını istemediğin varlıkta `assets.auto_price = false` yap.
+
 ## 2. Güvenlik modeli
 
 Herkes her şeyi **okur**, sadece kendi satırını **yazar**. `positions`, `snapshots`,
