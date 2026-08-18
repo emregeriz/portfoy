@@ -5,6 +5,7 @@ import { useTheme } from '../hooks/useTheme'
 
 const NAV = [
   { to: '/', label: 'Dashboard', end: true },
+  { to: '/takip', label: 'Takip' },
   { to: '/snapshot/new', label: 'Yeni Giriş' },
   { to: '/history', label: 'Geçmiş' },
   { to: '/accounts', label: 'Hesaplar' },

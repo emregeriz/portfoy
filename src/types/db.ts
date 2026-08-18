@@ -42,6 +42,16 @@ export interface Snapshot {
   created_at: string
 }
 
+export interface TakipEntry {
+  id: string
+  user_id: string
+  entry_date: string
+  items: Record<string, number>
+  debt: number
+  note: string | null
+  created_at: string
+}
+
 export interface Position {
   id: string
   snapshot_id: string

@@ -11,6 +11,7 @@ import Ipo from './pages/Ipo'
 import Transactions from './pages/Transactions'
 import Debts from './pages/Debts'
 import Compare from './pages/Compare'
+import Takip from './pages/Takip'
 import { Spinner } from './components/ui'
 
 function Protected() {
@@ -28,6 +29,7 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route element={<Protected />}>
             <Route index element={<Dashboard />} />
+          <Route path="takip" element={<Takip />} />
             <Route path="snapshot/new" element={<NewSnapshot />} />
             <Route path="snapshot/:id/edit" element={<NewSnapshot />} />
             <Route path="history" element={<History />} />
