@@ -4,6 +4,7 @@ import { format, parseISO } from 'date-fns'
 import { tr } from 'date-fns/locale'
 import { useAuth } from '../hooks/useAuth'
 import { useNetWorth, useSnapshots, usePositionsForSnapshots } from '../hooks/useSnapshots'
+import { usePrices } from '../hooks/usePrices'
 import UserTabs from '../components/UserTabs'
 import StatCard from '../components/StatCard'
 import NetWorthChart, { type ChartPoint } from '../components/NetWorthChart'
@@ -20,7 +21,7 @@ import {
   PERIOD_LABELS,
   type Period,
 } from '../lib/calc'
-import { formatTRY } from '../lib/currency'
+import { formatPercent, formatTRY } from '../lib/currency'
 
 export default function Dashboard() {
   const { profiles, user } = useAuth()
@@ -75,6 +76,32 @@ export default function Dashboard() {
   const byAccount = useMemo(() => allocationByAccount(positions), [positions])
 
   const netChange = change(last?.net_worth_try ?? 0, prev?.net_worth_try)
+
+  const { byAssetId, latestDate, refreshing, refresh, error: priceError } = usePrices()
+
+  /**
+   * Son snapshot'taki adetler güncel fiyatlarla değerlenir.
+   * Adedi veya fiyatı olmayan kalemler snapshot'taki tutarıyla sayılır.
+   */
+  const live = useMemo(() => {
+    if (!positions.length) return null
+    let total = 0
+    let priced = 0
+    for (const p of positions) {
+      const lp = p.asset_id ? byAssetId.get(p.asset_id) : undefined
+      const qty = Number(p.quantity ?? 0)
+      if (lp && qty > 0) {
+        total += qty * Number(lp.price)
+        priced++
+      } else {
+        total += Number(p.amount_try ?? 0)
+      }
+    }
+    return { total, priced, count: positions.length }
+  }, [positions, byAssetId])
+
+  const liveNet = live ? live.total - (last?.total_liabilities_try ?? 0) : null
+  const liveChange = liveNet != null ? change(liveNet, last?.net_worth_try) : null
 
   return (
     <div className="space-y-5">
@@ -135,6 +162,42 @@ export default function Dashboard() {
           hint={prev ? `Önceki: ${formatTRY(prev.net_worth_try)}` : 'Karşılaştırma için 2. kayıt gerekli'}
         />
       </div>
+
+      {live && live.priced > 0 && (
+        <Card
+          title="Şu Anki Tahmini Değer"
+          actions={
+            <button className="btn-ghost text-xs" onClick={() => void refresh()} disabled={refreshing} type="button">
+              {refreshing ? 'Güncelleniyor…' : '↻ Fiyatları güncelle'}
+            </button>
+          }
+        >
+          <div className="flex flex-wrap items-end gap-x-8 gap-y-3">
+            <div>
+              <p className="text-2xl font-semibold text-slate-100">{formatTRY(liveNet ?? 0)}</p>
+              <p className="text-xs text-muted">
+                Net değer · son kayıt {formatTRY(last?.net_worth_try ?? 0)}
+                {liveChange && liveChange.percent !== null && (
+                  <span className={liveChange.absolute >= 0 ? ' text-pos' : ' text-neg'}>
+                    {' '}({formatPercent(liveChange.percent)})
+                  </span>
+                )}
+              </p>
+            </div>
+            <div>
+              <p className="text-lg text-slate-200">{formatTRY(live.total)}</p>
+              <p className="text-xs text-muted">Toplam varlık</p>
+            </div>
+            <div className="text-xs text-muted">
+              <p>
+                {live.priced}/{live.count} kalem güncel fiyatla değerlendi
+              </p>
+              <p>Fiyat tarihi: {latestDate ?? '—'}</p>
+            </div>
+          </div>
+          {priceError && <p className="mt-2 text-xs text-rose-400">{priceError}</p>}
+        </Card>
+      )}
 
       <Card title="Net Değer Zaman Serisi">
         {loading ? <Spinner /> : (
