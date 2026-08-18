@@ -34,6 +34,33 @@ type EntryValues = {
 const expensesSum = (list: TakipExpense[] | null | undefined) =>
   (list ?? []).reduce((s, x) => s + Number(x.amount || 0), 0)
 
+function ToggleChip({
+  active,
+  onClick,
+  title,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  title?: string
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className={`px-1.5 py-0.5 rounded-md text-[10px] font-medium border transition-colors ${
+        active
+          ? 'bg-accent/15 text-accent border-accent/40'
+          : 'text-muted border-border hover:text-ink'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
 function EntryForm({
   entry,
   itemNames,
@@ -298,17 +325,22 @@ export default function Takip() {
   )
   const totalExpenses = allExpenses.reduce((s, x) => s + Number(x.amount || 0), 0)
 
-  const chartData: ChartPoint[] = useMemo(
-    () =>
-      computed
-        .filter((e) => e.entry_date >= lo && e.entry_date <= hi)
-        .map((e) => ({ date: e.entry_date, net: e.net, brut: e.gross })),
-    [computed, lo, hi]
-  )
+  // "Ek gider olmasaydı" serisi: aralık başından itibaren harcanan giderler kümülatif geri eklenir
+  const chartData: ChartPoint[] = useMemo(() => {
+    const visible = computed.filter((e) => e.entry_date >= lo && e.entry_date <= hi)
+    let cum = 0
+    return visible.map((e, i) => {
+      if (i > 0) cum += expensesSum(e.expenses)
+      return { date: e.entry_date, net: e.net, brut: e.gross, netExp: e.net + cum }
+    })
+  }, [computed, lo, hi])
 
+  const [showGross, setShowGross] = useState(false)
+  const [showExp, setShowExp] = useState(false)
   const series = [
     { key: 'net', label: 'Net Portföy', color: '#4f8cff' },
-    ...(hasDebt ? [{ key: 'brut', label: 'Borç Düşülmeden', color: '#22c55e' }] : []),
+    ...(showGross ? [{ key: 'brut', label: 'Borç Düşülmeden', color: '#22c55e' }] : []),
+    ...(showExp ? [{ key: 'netExp', label: 'Ek Gider Olmasaydı', color: '#f59e0b' }] : []),
   ]
 
   const debtRows = useMemo(
@@ -370,18 +402,13 @@ export default function Takip() {
           <div className="flex items-center justify-between gap-2">
             <div className="text-xs font-medium text-muted uppercase tracking-wide">Net Portföy</div>
             {totalExpenses > 0 && (
-              <button
-                type="button"
+              <ToggleChip
+                active={includeExpenses}
                 onClick={() => setIncludeExpenses((v) => !v)}
                 title="Ek giderler harcanmamış olsaydı"
-                className={`px-1.5 py-0.5 rounded-md text-[10px] font-medium border transition-colors ${
-                  includeExpenses
-                    ? 'bg-accent/15 text-accent border-accent/40'
-                    : 'text-muted border-border hover:text-ink'
-                }`}
               >
                 +Gider
-              </button>
+              </ToggleChip>
             )}
           </div>
           <div
@@ -451,7 +478,34 @@ export default function Takip() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
-        <Card title="Portföy Gelişimi" className="lg:col-span-2">
+        <Card
+          title="Portföy Gelişimi"
+          className="lg:col-span-2"
+          actions={
+            hasDebt || totalExpenses > 0 ? (
+              <div className="flex items-center gap-1.5">
+                {hasDebt && (
+                  <ToggleChip
+                    active={showGross}
+                    onClick={() => setShowGross((v) => !v)}
+                    title="Borç düşülmemiş seriyi göster/gizle"
+                  >
+                    Borç Düşülmeden
+                  </ToggleChip>
+                )}
+                {totalExpenses > 0 && (
+                  <ToggleChip
+                    active={showExp}
+                    onClick={() => setShowExp((v) => !v)}
+                    title="Ek giderler harcanmasaydı serisini göster/gizle"
+                  >
+                    Ek Gider Olmasaydı
+                  </ToggleChip>
+                )}
+              </div>
+            ) : undefined
+          }
+        >
           {loading ? <Spinner /> : <NetWorthChart data={chartData} series={series} />}
         </Card>
 
