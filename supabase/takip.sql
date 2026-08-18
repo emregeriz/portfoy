@@ -9,11 +9,16 @@ create table if not exists public.takip_entries (
   entry_date date not null,
   items      jsonb not null default '{}'::jsonb,
   debt       numeric not null default 0,
+  expenses   jsonb not null default '[]'::jsonb,
   note       text,
   created_at timestamptz not null default now()
 );
 create index if not exists takip_entries_user_date_idx
   on public.takip_entries(user_id, entry_date desc);
+
+-- Mevcut kurulumlar için: ek gider kolonu
+alter table public.takip_entries
+  add column if not exists expenses jsonb not null default '[]'::jsonb;
 
 alter table public.takip_entries enable row level security;
 

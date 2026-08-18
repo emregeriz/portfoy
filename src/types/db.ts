@@ -42,12 +42,18 @@ export interface Snapshot {
   created_at: string
 }
 
+export interface TakipExpense {
+  desc: string
+  amount: number
+}
+
 export interface TakipEntry {
   id: string
   user_id: string
   entry_date: string
   items: Record<string, number>
   debt: number
+  expenses: TakipExpense[]
   note: string | null
   created_at: string
 }

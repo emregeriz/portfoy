@@ -8,7 +8,7 @@ import NetWorthChart, { type ChartPoint } from '../components/NetWorthChart'
 import { Card, Empty, ErrorBox, Modal, PageHeader, Spinner } from '../components/ui'
 import { change, todayISO } from '../lib/calc'
 import { formatPercent, formatTRY, parseAmount } from '../lib/currency'
-import type { TakipEntry } from '../types/db'
+import type { TakipEntry, TakipExpense } from '../types/db'
 
 const DEFAULT_ITEMS = ['Annem', 'Babam', 'Mablam', 'Nablam', 'Garanti', 'Ziraat', 'Midas', 'Tera']
 
@@ -27,8 +27,12 @@ type EntryValues = {
   entry_date: string
   items: Record<string, number>
   debt: number
+  expenses: TakipExpense[]
   note: string | null
 }
+
+const expensesSum = (list: TakipExpense[] | null | undefined) =>
+  (list ?? []).reduce((s, x) => s + Number(x.amount || 0), 0)
 
 function EntryForm({
   entry,
@@ -50,6 +54,9 @@ function EntryForm({
   )
   const [debt, setDebt] = useState(entry && Number(entry.debt) !== 0 ? String(entry.debt) : '')
   const [note, setNote] = useState(entry?.note ?? '')
+  const [expRows, setExpRows] = useState<{ desc: string; amount: string }[]>(() =>
+    (entry?.expenses ?? []).map((x) => ({ desc: x.desc, amount: String(x.amount) }))
+  )
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -69,11 +76,15 @@ function EntryForm({
       if (!name || r.value.trim() === '') continue
       items[name] = parseAmount(r.value)
     }
+    const expenses: TakipExpense[] = expRows
+      .filter((r) => r.desc.trim() || r.amount.trim())
+      .map((r) => ({ desc: r.desc.trim(), amount: parseAmount(r.amount) }))
     try {
       await onSave({
         entry_date: date,
         items,
         debt: parseAmount(debt),
+        expenses,
         note: note.trim() || null,
       })
       onClose()
@@ -155,6 +166,50 @@ function EntryForm({
         </div>
       </div>
 
+      <div>
+        <div className="label">Ek Giderler</div>
+        {expRows.length > 0 && (
+          <div className="space-y-2">
+            {expRows.map((r, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <input
+                  placeholder="Açıklama"
+                  className="w-full"
+                  value={r.desc}
+                  onChange={(e) =>
+                    setExpRows((prev) => prev.map((x, j) => (j === i ? { ...x, desc: e.target.value } : x)))
+                  }
+                />
+                <input
+                  inputMode="decimal"
+                  placeholder="0"
+                  className="w-32 shrink-0 text-right num"
+                  value={r.amount}
+                  onChange={(e) =>
+                    setExpRows((prev) => prev.map((x, j) => (j === i ? { ...x, amount: e.target.value } : x)))
+                  }
+                />
+                <button
+                  type="button"
+                  className="btn-ghost text-xs shrink-0"
+                  aria-label="Gideri kaldır"
+                  onClick={() => setExpRows((prev) => prev.filter((_, j) => j !== i))}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <button
+          type="button"
+          className="btn-ghost text-xs mt-2"
+          onClick={() => setExpRows((prev) => [...prev, { desc: '', amount: '' }])}
+        >
+          + Ek Gider
+        </button>
+      </div>
+
       <div className="flex items-center justify-between text-sm border-t border-border pt-3">
         <span className="text-muted">
           Toplam: <span className="num text-ink">{formatTRY(total)}</span>
@@ -209,19 +264,52 @@ export default function Takip() {
 
   const hasDebt = computed.some((e) => Number(e.debt) > 0)
 
-  const chartData: ChartPoint[] = useMemo(
-    () => computed.map((e) => ({ date: e.entry_date, net: e.net, brut: e.gross })),
+  const last = computed[computed.length - 1] ?? null
+
+  // Karşılaştırma aralığı — varsayılan: ilk kayıt → son kayıt
+  const dates = useMemo(() => [...new Set(computed.map((e) => e.entry_date))], [computed])
+  const [rangeStart, setRangeStart] = useState('')
+  const [rangeEnd, setRangeEnd] = useState('')
+  const selStart = (rangeStart && dates.includes(rangeStart) ? rangeStart : dates[0]) ?? ''
+  const selEnd = (rangeEnd && dates.includes(rangeEnd) ? rangeEnd : dates[dates.length - 1]) ?? ''
+  const [lo, hi] = selStart <= selEnd ? [selStart, selEnd] : [selEnd, selStart]
+  const startEntry = computed.find((e) => e.entry_date === lo) ?? null
+  const endEntry = [...computed].reverse().find((e) => e.entry_date === hi) ?? null
+
+  // Ek giderler: "harcanmasaydı" senaryosu — aralık içinde harcananlar net'e geri eklenir
+  const [includeExpenses, setIncludeExpenses] = useState(false)
+  const rangeExpenses = useMemo(
+    () =>
+      computed
+        .filter((e) => e.entry_date > lo && e.entry_date <= hi)
+        .reduce((s, e) => s + expensesSum(e.expenses), 0),
+    [computed, lo, hi]
+  )
+  const displayNet = (endEntry?.net ?? 0) + (includeExpenses ? rangeExpenses : 0)
+  const rangeChange =
+    startEntry && endEntry && lo !== hi ? change(displayNet, startEntry.net) : null
+
+  const allExpenses = useMemo(
+    () =>
+      [...computed]
+        .reverse()
+        .flatMap((e) => (e.expenses ?? []).map((x) => ({ ...x, date: e.entry_date }))),
     [computed]
+  )
+  const totalExpenses = allExpenses.reduce((s, x) => s + Number(x.amount || 0), 0)
+
+  const chartData: ChartPoint[] = useMemo(
+    () =>
+      computed
+        .filter((e) => e.entry_date >= lo && e.entry_date <= hi)
+        .map((e) => ({ date: e.entry_date, net: e.net, brut: e.gross })),
+    [computed, lo, hi]
   )
 
   const series = [
     { key: 'net', label: 'Net Portföy', color: '#4f8cff' },
     ...(hasDebt ? [{ key: 'brut', label: 'Borç Düşülmeden', color: '#22c55e' }] : []),
   ]
-
-  const last = computed[computed.length - 1] ?? null
-  const prev = computed[computed.length - 2] ?? null
-  const netChange = change(last?.net ?? 0, prev?.net)
 
   const debtRows = useMemo(
     () => [...computed].reverse().filter((e) => Number(e.debt) > 0 || e.note),
@@ -278,16 +366,87 @@ export default function Takip() {
           value={last?.debt ?? 0}
           tone={(last?.debt ?? 0) > 0 ? 'neg' : 'neutral'}
         />
+        <div className="card">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs font-medium text-muted uppercase tracking-wide">Net Portföy</div>
+            {totalExpenses > 0 && (
+              <button
+                type="button"
+                onClick={() => setIncludeExpenses((v) => !v)}
+                title="Ek giderler harcanmamış olsaydı"
+                className={`px-1.5 py-0.5 rounded-md text-[10px] font-medium border transition-colors ${
+                  includeExpenses
+                    ? 'bg-accent/15 text-accent border-accent/40'
+                    : 'text-muted border-border hover:text-ink'
+                }`}
+              >
+                +Gider
+              </button>
+            )}
+          </div>
+          <div
+            className={`mt-2 text-2xl font-semibold num ${displayNet >= 0 ? 'text-pos' : 'text-neg'}`}
+          >
+            {formatTRY(displayNet)}
+          </div>
+          {includeExpenses && rangeExpenses > 0 && (
+            <div className="text-xs text-muted">{formatTRY(rangeExpenses)} ek gider dahil</div>
+          )}
+          {rangeChange ? (
+            <div
+              className={`mt-1 text-sm num ${rangeChange.absolute >= 0 ? 'text-pos' : 'text-neg'}`}
+            >
+              {formatPercent(rangeChange.percent)} ({rangeChange.absolute >= 0 ? '+' : ''}
+              {formatTRY(rangeChange.absolute)})
+            </div>
+          ) : (
+            <div className="mt-1 text-sm text-muted">Karşılaştırma için 2. kayıt gerekli</div>
+          )}
+          {dates.length > 1 && (
+            <div className="mt-2 flex items-center gap-1.5">
+              <select
+                className="flex-1 min-w-0 px-2 py-1 text-xs"
+                value={selStart}
+                onChange={(e) => setRangeStart(e.target.value)}
+                aria-label="Başlangıç tarihi"
+              >
+                {dates.map((d) => (
+                  <option key={d} value={d}>{fmtDate(d)}</option>
+                ))}
+              </select>
+              <span className="text-muted text-xs shrink-0">→</span>
+              <select
+                className="flex-1 min-w-0 px-2 py-1 text-xs"
+                value={selEnd}
+                onChange={(e) => setRangeEnd(e.target.value)}
+                aria-label="Bitiş tarihi"
+              >
+                {dates.map((d) => (
+                  <option key={d} value={d}>{fmtDate(d)}</option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
         <StatCard
-          title="Net Portföy"
-          value={last?.net ?? 0}
-          change={netChange}
-          tone={(last?.net ?? 0) >= 0 ? 'pos' : 'neg'}
-        />
-        <StatCard
-          title="Kayıt Sayısı"
-          value={String(computed.length)}
-          hint={prev ? `Önceki: ${formatTRY(prev.net)}` : 'Karşılaştırma için 2. kayıt gerekli'}
+          title="Ek Gider"
+          value={totalExpenses}
+          tone={totalExpenses > 0 ? 'neg' : 'neutral'}
+          hint={
+            allExpenses.length > 0 ? (
+              <div className="space-y-0.5">
+                {allExpenses.slice(0, 3).map((x, i) => (
+                  <div key={i} className="flex justify-between gap-2">
+                    <span className="truncate">{x.desc || fmtDate(x.date)}</span>
+                    <span className="num shrink-0">{formatTRY(x.amount)}</span>
+                  </div>
+                ))}
+                {allExpenses.length > 3 && <div>+{allExpenses.length - 3} kalem daha</div>}
+              </div>
+            ) : (
+              'Ekle modalından ek gider girebilirsin'
+            )
+          }
         />
       </div>
 
