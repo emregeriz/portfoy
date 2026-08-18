@@ -207,6 +207,23 @@ export default function NewSnapshot() {
   const fillFromPrices = async () => {
     setError(null)
     setInfo(null)
+
+    // Yeni yazılan sembol henüz katalogda olmayabilir; fiyat çekici yalnızca
+    // kayıtlı varlıklara baktığı için önce onları oluştur.
+    if (user) {
+      const seen = new Set<string>()
+      for (const r of rows) {
+        const sym = r.symbol.trim().toUpperCase()
+        if (!sym || seen.has(sym)) continue
+        seen.add(sym)
+        try {
+          await ensureAsset(sym, r.kind, user.id)
+        } catch {
+          // katalog hatası fiyat çekmeyi durdurmasın
+        }
+      }
+    }
+
     const res = await refresh()
     if (!res) {
       setError('Fiyatlar çekilemedi. Edge Function kurulu mu?')
@@ -247,7 +264,10 @@ export default function NewSnapshot() {
       })
     )
 
-    const parts = [`${filledCount} kalem güncellendi`]
+    const hasInput = rows.some((r) => r.symbol.trim() && parseAmount(r.quantity) > 0)
+    const parts = hasInput
+      ? [`${filledCount} kalem güncellendi`]
+      : ['Kurlar tazelendi. Tutar hesaplanması için satıra varlık kodu ve adet gir (örn. THYAO · 100).']
     if (missing.length) parts.push(`fiyatı bulunamayan: ${[...new Set(missing)].join(', ')}`)
     if (summary?.errors?.length) parts.push(summary.errors.join(' · '))
     setInfo(parts.join(' · '))
