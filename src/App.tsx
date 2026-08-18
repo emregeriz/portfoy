@@ -12,6 +12,7 @@ import Transactions from './pages/Transactions'
 import Debts from './pages/Debts'
 import Compare from './pages/Compare'
 import Takip from './pages/Takip'
+import Reminders from './pages/Reminders'
 import { Spinner } from './components/ui'
 
 function Protected() {
@@ -38,6 +39,7 @@ export default function App() {
             <Route path="transactions" element={<Transactions />} />
             <Route path="debts" element={<Debts />} />
             <Route path="compare" element={<Compare />} />
+            <Route path="reminders" element={<Reminders />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

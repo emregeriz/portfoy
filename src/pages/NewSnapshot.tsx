@@ -39,6 +39,7 @@ const DEBT_TYPES: { value: LiabilityType; label: string }[] = [
   { value: 'kredi_karti', label: 'Kredi Kartı' },
   { value: 'kredi', label: 'Kredi' },
   { value: 'kisisel_borc', label: 'Kişisel Borç' },
+  { value: 'fatura', label: 'Fatura' },
   { value: 'diger', label: 'Diğer' },
 ]
 

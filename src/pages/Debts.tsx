@@ -16,6 +16,7 @@ const DEBT_TYPES: { value: LiabilityType; label: string }[] = [
   { value: 'kredi_karti', label: 'Kredi Kartı' },
   { value: 'kredi', label: 'Kredi' },
   { value: 'kisisel_borc', label: 'Kişisel Borç' },
+  { value: 'fatura', label: 'Fatura' },
   { value: 'diger', label: 'Diğer' },
 ]
 
@@ -100,9 +101,13 @@ export default function Debts() {
       currency: String(fd.get('currency') ?? 'TRY') as Currency,
       fx_rate: parseAmount(String(fd.get('fx_rate') ?? '1')) || 1,
       due_date: String(fd.get('due_date') ?? '') || null,
+      repeat_monthly: fd.get('repeat_monthly') === 'on',
       note: String(fd.get('note') ?? '').trim() || null,
     }
     if (!values.title) return setFormError('Başlık gerekli.')
+    if (values.repeat_monthly && !values.due_date) {
+      return setFormError('Tekrarlayan fatura için vade tarihi gerekli.')
+    }
     try {
       if (modal === 'new') await liabilities.insert(values)
       else await liabilities.update((modal as Liability).id, values)
@@ -507,6 +512,21 @@ export default function Debts() {
                 />
               </div>
             </div>
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                name="repeat_monthly"
+                className="mt-0.5"
+                defaultChecked={(editing as Liability | null)?.repeat_monthly ?? false}
+              />
+              <span>
+                Her ay tekrarlasın
+                <span className="block text-xs text-muted">
+                  Elektrik, su, internet gibi düzenli faturalar için. Vadesi geçince
+                  bir sonraki ayın kaydı otomatik açılır ve o da hatırlatılır.
+                </span>
+              </span>
+            </label>
             <div>
               <label className="label">Not</label>
               <input name="note" className="w-full" defaultValue={(editing as Liability | null)?.note ?? ''} />

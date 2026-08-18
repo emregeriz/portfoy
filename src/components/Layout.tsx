@@ -20,6 +20,7 @@ export default function Layout() {
   const { theme, toggle } = useTheme()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
 
   const handleSignOut = async () => {
     await signOut()
@@ -52,20 +53,58 @@ export default function Layout() {
           </nav>
 
           <div className="ml-auto flex items-center gap-3">
-            <span
-              className="hidden sm:inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-medium border"
-              style={{
-                borderColor: (profile?.color ?? '#4f8cff') + '66',
-                background: (profile?.color ?? '#4f8cff') + '1a',
-                color: profile?.color ?? '#4f8cff',
-              }}
-            >
-              <span
-                className="w-2 h-2 rounded-full"
-                style={{ background: profile?.color ?? '#4f8cff' }}
-              />
-              {profile?.display_name ?? user?.email ?? '—'}
-            </span>
+            <div className="relative hidden sm:block">
+              <button
+                onClick={() => setMenuOpen((v) => !v)}
+                className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-medium border transition-opacity hover:opacity-80"
+                style={{
+                  borderColor: (profile?.color ?? '#4f8cff') + '66',
+                  background: (profile?.color ?? '#4f8cff') + '1a',
+                  color: profile?.color ?? '#4f8cff',
+                }}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+              >
+                <span
+                  className="w-2 h-2 rounded-full"
+                  style={{ background: profile?.color ?? '#4f8cff' }}
+                />
+                {profile?.display_name ?? user?.email ?? '—'}
+                <span className="opacity-60">▾</span>
+              </button>
+
+              {menuOpen && (
+                <>
+                  {/* Dışarı tıklayınca kapansın */}
+                  <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
+                  <div className="absolute right-0 mt-2 z-20 w-52 rounded-lg border border-border bg-surface shadow-xl overflow-hidden">
+                    <div className="px-3 py-2 border-b border-border">
+                      <div className="text-sm font-medium text-ink">
+                        {profile?.display_name ?? '—'}
+                      </div>
+                      <div className="text-xs text-muted truncate">{user?.email}</div>
+                    </div>
+                    <NavLink
+                      to="/reminders"
+                      onClick={() => setMenuOpen(false)}
+                      className="block px-3 py-2 text-sm text-ink hover:bg-surface2"
+                    >
+                      Hatırlatıcılar
+                    </NavLink>
+                    <button
+                      onClick={() => {
+                        setMenuOpen(false)
+                        void handleSignOut()
+                      }}
+                      className="block w-full text-left px-3 py-2 text-sm text-neg hover:bg-surface2"
+                    >
+                      Çıkış
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
             <button
               onClick={toggle}
               className="btn-ghost text-xs"
@@ -74,7 +113,7 @@ export default function Layout() {
             >
               {theme === 'dark' ? '☀️' : '🌙'}
             </button>
-            <button onClick={handleSignOut} className="btn-ghost text-xs">
+            <button onClick={handleSignOut} className="btn-ghost text-xs sm:hidden">
               Çıkış
             </button>
             <button
@@ -89,7 +128,7 @@ export default function Layout() {
 
         {open && (
           <nav className="md:hidden border-t border-border grid grid-cols-2 gap-1 p-2">
-            {NAV.map((item) => (
+            {[...NAV, { to: '/reminders', label: 'Hatırlatıcılar', end: undefined }].map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}

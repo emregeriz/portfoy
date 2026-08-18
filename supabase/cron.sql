@@ -10,7 +10,16 @@
 
 -- ---------------------------------------------------------------- 1
 -- Service role anahtarını Vault'a koy (SQL metninde açıkta durmasın).
--- <SERVICE_ROLE_KEY> yerine Settings → API Keys → service_role değerini yaz.
+--
+-- DİKKAT: Buraya Supabase'in **service_role** anahtarı girer —
+-- Settings → API Keys → service_role. Resend ya da başka bir servisin
+-- anahtarı DEĞİL. Cron, Edge Function'ı bu anahtarla çağırıp kimlik
+-- doğrulamasından geçiyor; yanlış anahtar 401 verir ve hatırlatma hiç
+-- çalışmaz. Resend anahtarı Edge Function secret'ında duruyor, buraya
+-- yazılmaz.
+--
+-- Çalıştırmadan önce aşağıdaki yer tutucuyu gerçek değerle değiştir,
+-- çalıştırdıktan sonra dosyaya geri koy — bu dosya depoya gidiyor.
 select vault.create_secret('<SERVICE_ROLE_KEY>', 'service_role_key');
 
 -- ---------------------------------------------------------------- 2
@@ -37,3 +46,42 @@ select cron.schedule(
 --   select * from cron.job;
 --   select * from cron.job_run_details order by start_time desc limit 10;
 --   select cron.unschedule('fetch-prices-daily');
+
+-- ---------------------------------------------------------------- 4
+-- Borç & fatura hatırlatma maili — her sabah 08:00 TR (05:00 UTC)
+-- Vadesi bugün ya da yarın olan ödemeleri tek mailde toplar.
+select cron.schedule(
+  'debt-reminders-daily',
+  '0 5 * * *',
+  $cron$
+  select net.http_post(
+    url     := 'https://wihfycgxdvazhgnnprhz.supabase.co/functions/v1/debt-reminders',
+    headers := jsonb_build_object(
+      'Content-Type',  'application/json',
+      'Authorization', 'Bearer ' || (
+        select decrypted_secret from vault.decrypted_secrets where name = 'service_role_key'
+      )
+    ),
+    body    := '{}'::jsonb
+  );
+  $cron$
+);
+
+-- ---------------------------------------------------------------- 5
+-- Serbest hatırlatıcılar — 15 dakikada bir; saati gelenler gönderilir
+select cron.schedule(
+  'custom-reminders-quarterly',
+  '*/15 * * * *',
+  $cron$
+  select net.http_post(
+    url     := 'https://wihfycgxdvazhgnnprhz.supabase.co/functions/v1/custom-reminders',
+    headers := jsonb_build_object(
+      'Content-Type',  'application/json',
+      'Authorization', 'Bearer ' || (
+        select decrypted_secret from vault.decrypted_secrets where name = 'service_role_key'
+      )
+    ),
+    body    := '{}'::jsonb
+  );
+  $cron$
+);

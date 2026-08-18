@@ -6,6 +6,8 @@ import { useAuth } from '../hooks/useAuth'
 import { useNetWorth, useSnapshots, usePositionsForSnapshots } from '../hooks/useSnapshots'
 import { usePrices } from '../hooks/usePrices'
 import { useIpos, ipoStats } from '../hooks/useIpos'
+import { useTable } from '../hooks/useTable'
+import type { Liability } from '../types/db'
 import UserTabs from '../components/UserTabs'
 import StatCard from '../components/StatCard'
 import NetWorthChart, { type ChartPoint } from '../components/NetWorthChart'
@@ -82,6 +84,31 @@ export default function Dashboard() {
   const { ipos, entries, totalWaiting } = useIpos(isTotal ? null : effectiveScope)
 
   /**
+   * Snapshot'a bağlı olmayan açık borçlar — kredi kartı, fatura vb.
+   * Snapshot'a bağlı olanlar zaten total_liabilities_try içinde sayılıyor,
+   * o yüzden yalnızca bağımsız kayıtlar buraya giriyor.
+   */
+  const { rows: allLiabilities } = useTable<Liability>('liabilities', {
+    userId: isTotal ? null : effectiveScope,
+  })
+  const openDebts = useMemo(
+    () => allLiabilities.filter((l) => !l.is_settled && l.snapshot_id === null),
+    [allLiabilities]
+  )
+  const openDebtTotal = useMemo(
+    () => openDebts.reduce((s, l) => s + Number(l.amount) * Number(l.fx_rate ?? 1), 0),
+    [openDebts]
+  )
+  const todayStr = new Date().toISOString().slice(0, 10)
+  /** Vadesi 7 gün içinde dolan ya da geçmiş ödemeler */
+  const dueSoon = useMemo(() => {
+    const limit = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10)
+    return openDebts
+      .filter((l) => l.due_date && l.due_date <= limit)
+      .sort((a, b) => (a.due_date ?? '').localeCompare(b.due_date ?? ''))
+  }, [openDebts])
+
+  /**
    * Halka arz hesaplarındaki para portföyün parçası: bekleyen nakit +
    * henüz satılmamış arzların güncel değeri.
    */
@@ -123,8 +150,8 @@ export default function Dashboard() {
   }, [positions, byAssetId])
 
   const liveAssets = (live?.total ?? last?.total_assets_try ?? 0) + ipoTotal.total
-  const showLive = (live && live.priced > 0) || ipoTotal.total > 0
-  const liveNet = showLive ? liveAssets - (last?.total_liabilities_try ?? 0) : null
+  const showLive = (live && live.priced > 0) || ipoTotal.total > 0 || openDebtTotal > 0
+  const liveNet = showLive ? liveAssets - (last?.total_liabilities_try ?? 0) - openDebtTotal : null
   const liveChange = liveNet != null ? change(liveNet, last?.net_worth_try) : null
 
   return (
@@ -166,6 +193,33 @@ export default function Dashboard() {
       </div>
 
       {error && <ErrorBox message={error} />}
+
+      {dueSoon.length > 0 && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+          <div className="text-sm font-medium text-amber-600 dark:text-amber-400 mb-1">
+            Yaklaşan ödemeler
+          </div>
+          <ul className="space-y-0.5 text-xs">
+            {dueSoon.map((l) => {
+              const overdue = (l.due_date ?? '') < todayStr
+              return (
+                <li key={l.id} className="flex justify-between gap-3">
+                  <span>
+                    {l.title}
+                    {l.counterparty ? ` · ${l.counterparty}` : ''}
+                  </span>
+                  <span className={`num ${overdue ? 'text-neg' : 'text-muted'}`}>
+                    {formatTRY(Number(l.amount) * Number(l.fx_rate ?? 1))} ·{' '}
+                    {overdue
+                      ? 'gecikti'
+                      : format(parseISO(l.due_date as string), 'd MMM', { locale: tr })}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard title="Toplam Varlık" value={last?.total_assets_try ?? 0} />
@@ -212,6 +266,12 @@ export default function Dashboard() {
               <p className="text-lg text-ink">{formatTRY(liveAssets)}</p>
               <p className="text-xs text-muted">Toplam varlık</p>
             </div>
+            {openDebtTotal > 0 && (
+              <div>
+                <p className="text-lg text-neg">−{formatTRY(openDebtTotal)}</p>
+                <p className="text-xs text-muted">Açık borç & fatura</p>
+              </div>
+            )}
             {ipoTotal.total > 0 && (
               <div>
                 <p className="text-lg text-ink">{formatTRY(ipoTotal.total)}</p>

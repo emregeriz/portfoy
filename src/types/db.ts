@@ -1,7 +1,7 @@
 export type Currency = 'TRY' | 'USD' | 'EUR' | 'XAU' | 'GBP'
 export type AccountType = 'banka' | 'aracikurum' | 'nakit' | 'kripto' | 'diger'
 export type AssetKind = 'hisse' | 'fon' | 'doviz' | 'altin' | 'mevduat' | 'kripto' | 'diger'
-export type LiabilityType = 'kredi_karti' | 'kredi' | 'kisisel_borc' | 'diger'
+export type LiabilityType = 'kredi_karti' | 'kredi' | 'kisisel_borc' | 'fatura' | 'diger'
 export type TxDirection = 'gelir' | 'gider'
 export type TxCategory = 'fatura' | 'seyahat' | 'market' | 'kira' | 'maas' | 'kk_odeme' | 'diger'
 export type IpoStatus = 'talep_verildi' | 'dagitildi' | 'satildi' | 'iptal'
@@ -91,6 +91,12 @@ export interface Liability {
   fx_rate: number
   due_date: string | null
   is_settled: boolean
+  /** Açıksa vadesi geçince bir sonraki ay otomatik açılır */
+  repeat_monthly: boolean
+  /** Aynı faturanın aylık kopyalarını birbirine bağlar */
+  series_id: string | null
+  /** Aynı gün ikinci kez mail gitmesin diye */
+  last_reminded_on: string | null
   note: string | null
   created_at: string
 }
@@ -213,4 +219,22 @@ export interface AccountBalance {
   account_id: string
   balance: number
   last_move: string | null
+}
+
+// --------------------------------------------------------------------
+// Serbest hatırlatıcılar — tarihi gelince e-posta gönderilir
+// --------------------------------------------------------------------
+export type RepeatMode = 'once' | 'monthly'
+
+export interface Reminder {
+  id: string
+  user_id: string
+  title: string
+  body: string | null
+  next_date: string
+  send_time: string
+  repeat_mode: RepeatMode
+  is_active: boolean
+  last_sent_on: string | null
+  created_at: string
 }
