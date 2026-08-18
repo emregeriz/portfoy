@@ -10,12 +10,14 @@ import NetWorthChart, { type ChartPoint } from '../components/NetWorthChart'
 import { Card, Empty, ErrorBox, Modal, PageHeader, Spinner } from '../components/ui'
 import { change, todayISO } from '../lib/calc'
 import { formatPercent, formatTRY, parseTRInput, toTRInput } from '../lib/currency'
-import type { TakipEntry, TakipExpense } from '../types/db'
+import type { CashKind, GelirGider, TakipEntry, TakipExpense } from '../types/db'
 
 const sumItems = (items: Record<string, number> | null | undefined) =>
   Object.values(items ?? {}).reduce((s, v) => s + Number(v || 0), 0)
 
 const fmtDate = (iso: string) => format(parseISO(iso), 'd MMM yyyy', { locale: tr })
+
+const fmtMonth = (ym: string) => format(parseISO(`${ym}-01`), 'MMM yyyy', { locale: tr })
 
 interface FormRow {
   name: string
@@ -257,6 +259,148 @@ function EntryForm({
   )
 }
 
+type CashValues = {
+  entry_date: string
+  kind: CashKind
+  title: string
+  amount: number
+}
+
+function CashForm({
+  entry,
+  kind,
+  onSave,
+  onClose,
+}: {
+  entry: GelirGider | null
+  kind: CashKind
+  onSave: (values: CashValues) => Promise<void>
+  onClose: () => void
+}) {
+  const [date, setDate] = useState(entry?.entry_date ?? todayISO())
+  const [title, setTitle] = useState(entry?.title ?? '')
+  const [amount, setAmount] = useState(entry ? toTRInput(entry.amount) : '')
+  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setBusy(true)
+    setErr(null)
+    try {
+      await onSave({
+        entry_date: date,
+        kind,
+        title: title.trim(),
+        amount: parseTRInput(amount),
+      })
+      onClose()
+    } catch (ex) {
+      setErr(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div>
+          <label className="label" htmlFor="cash-date">Tarih</label>
+          <input
+            id="cash-date"
+            type="date"
+            required
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="label" htmlFor="cash-amount">Tutar</label>
+          <NumberInput
+            id="cash-amount"
+            placeholder="0"
+            className="w-full text-right num"
+            value={amount}
+            onChange={setAmount}
+          />
+        </div>
+      </div>
+      <div>
+        <label className="label" htmlFor="cash-title">Kalem Başlığı</label>
+        <input
+          id="cash-title"
+          required
+          placeholder={kind === 'gelir' ? 'Maaş, kira geliri…' : 'Kira, market…'}
+          className="w-full"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+        />
+      </div>
+
+      {err && <ErrorBox message={err} />}
+
+      <div className="flex justify-end gap-2">
+        <button type="button" className="btn-ghost" onClick={onClose}>
+          Vazgeç
+        </button>
+        <button type="submit" className="btn-primary" disabled={busy}>
+          {busy ? 'Kaydediliyor…' : entry ? 'Güncelle' : 'Kaydet'}
+        </button>
+      </div>
+    </form>
+  )
+}
+
+function CashTable({
+  rows,
+  onEdit,
+  onRemove,
+}: {
+  rows: GelirGider[]
+  onEdit: (e: GelirGider) => void
+  onRemove: (id: string) => Promise<void>
+}) {
+  return (
+    <div className="overflow-x-auto -mx-4 px-4">
+      <table className="w-full">
+        <thead>
+          <tr>
+            <th className="th">Tarih</th>
+            <th className="th">Kalem</th>
+            <th className="th text-right">Tutar</th>
+            <th className="th" />
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((e) => (
+            <tr key={e.id}>
+              <td className="td whitespace-nowrap">{fmtDate(e.entry_date)}</td>
+              <td className="td">{e.title}</td>
+              <td className="td text-right num whitespace-nowrap font-medium">
+                <span className={e.kind === 'gelir' ? 'text-pos' : 'text-neg'}>
+                  {formatTRY(e.amount)}
+                </span>
+              </td>
+              <td className="td text-right whitespace-nowrap">
+                <button className="btn-ghost text-xs" onClick={() => onEdit(e)}>
+                  Düzenle
+                </button>{' '}
+                <button
+                  className="btn-danger text-xs"
+                  onClick={() => confirm('Silinsin mi?') && onRemove(e.id)}
+                >
+                  Sil
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 export default function Takip() {
   const { user } = useAuth()
   const { rows, loading, error, insert, update, remove } = useTable<TakipEntry>('takip_entries', {
@@ -345,6 +489,64 @@ export default function Takip() {
     () => [...computed].reverse().filter((e) => Number(e.debt) > 0 || e.note),
     [computed]
   )
+
+  // ------------------------------------------------------------------
+  // Gelir & Gider — ek giderlerden bağımsız, ay aralığına göre toplanır
+  // ------------------------------------------------------------------
+  const {
+    rows: cashRows,
+    loading: cashLoading,
+    error: cashError,
+    insert: cashInsert,
+    update: cashUpdate,
+    remove: cashRemove,
+  } = useTable<GelirGider>('gelir_gider', {
+    userId: user?.id,
+    orderBy: 'entry_date',
+    ascending: true,
+  })
+
+  const [cashModal, setCashModal] = useState<{ kind: CashKind; entry: GelirGider | null } | null>(
+    null
+  )
+
+  const cashMonths = useMemo(
+    () => [...new Set(cashRows.map((e) => e.entry_date.slice(0, 7)))].sort(),
+    [cashRows]
+  )
+  const [cashStart, setCashStart] = useState('')
+  const [cashEnd, setCashEnd] = useState('')
+  const cashSelStart =
+    (cashStart && cashMonths.includes(cashStart) ? cashStart : cashMonths[0]) ?? ''
+  const cashSelEnd =
+    (cashEnd && cashMonths.includes(cashEnd) ? cashEnd : cashMonths[cashMonths.length - 1]) ?? ''
+  const [cashLo, cashHi] =
+    cashSelStart <= cashSelEnd ? [cashSelStart, cashSelEnd] : [cashSelEnd, cashSelStart]
+
+  const cashInRange = useMemo(
+    () =>
+      cashRows.filter((e) => {
+        const m = e.entry_date.slice(0, 7)
+        return m >= cashLo && m <= cashHi
+      }),
+    [cashRows, cashLo, cashHi]
+  )
+  const gelirRows = useMemo(
+    () => [...cashInRange].reverse().filter((e) => e.kind === 'gelir'),
+    [cashInRange]
+  )
+  const giderRows = useMemo(
+    () => [...cashInRange].reverse().filter((e) => e.kind === 'gider'),
+    [cashInRange]
+  )
+  const totalGelir = gelirRows.reduce((s, e) => s + Number(e.amount || 0), 0)
+  const totalGider = giderRows.reduce((s, e) => s + Number(e.amount || 0), 0)
+  const netCash = totalGelir - totalGider
+
+  const saveCash = async (values: CashValues) => {
+    if (cashModal?.entry) await cashUpdate(cashModal.entry.id, values)
+    else await cashInsert({ ...values, user_id: user?.id })
+  }
 
   const openNew = () => {
     setEditing(null)
@@ -544,6 +746,112 @@ export default function Takip() {
         </Card>
       </div>
 
+      {cashError && /gelir_gider/.test(cashError) && (
+        <div className="space-y-2">
+          <ErrorBox message={cashError} />
+          <p className="text-sm text-muted">
+            Gelir/gider tablosu henüz oluşturulmamış görünüyor. Supabase panelinde SQL Editor'ü
+            açıp <code className="text-accent">supabase/gelir_gider.sql</code> dosyasının içeriğini
+            çalıştır, sonra bu sayfayı yenile.
+          </p>
+        </div>
+      )}
+
+      <div className="card">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-xs font-medium text-muted uppercase tracking-wide">
+              Net Elde Kalan
+            </div>
+            <div
+              className={`mt-1 text-2xl font-semibold num ${netCash >= 0 ? 'text-pos' : 'text-neg'}`}
+            >
+              {formatTRY(netCash)}
+            </div>
+            <div className="mt-0.5 text-xs text-muted num">
+              {formatTRY(totalGelir)} gelir − {formatTRY(totalGider)} gider
+            </div>
+          </div>
+          {cashMonths.length > 1 && (
+            <div className="flex items-center gap-1.5">
+              <select
+                className="px-2 py-1 text-xs"
+                value={cashSelStart}
+                onChange={(e) => setCashStart(e.target.value)}
+                aria-label="Başlangıç ayı"
+              >
+                {cashMonths.map((m) => (
+                  <option key={m} value={m}>{fmtMonth(m)}</option>
+                ))}
+              </select>
+              <span className="text-muted text-xs shrink-0">→</span>
+              <select
+                className="px-2 py-1 text-xs"
+                value={cashSelEnd}
+                onChange={(e) => setCashEnd(e.target.value)}
+                aria-label="Bitiş ayı"
+              >
+                {cashMonths.map((m) => (
+                  <option key={m} value={m}>{fmtMonth(m)}</option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card
+          title="Gelirler"
+          actions={
+            <div className="flex items-center gap-2">
+              {totalGelir > 0 && (
+                <span className="num text-sm font-medium text-pos">{formatTRY(totalGelir)}</span>
+              )}
+              <button
+                className="btn-primary text-xs"
+                onClick={() => setCashModal({ kind: 'gelir', entry: null })}
+              >
+                + Gelir
+              </button>
+            </div>
+          }
+        >
+          {cashLoading ? (
+            <Spinner />
+          ) : gelirRows.length === 0 ? (
+            <Empty>"+ Gelir" ile ilk gelirini gir.</Empty>
+          ) : (
+            <CashTable rows={gelirRows} onEdit={(e) => setCashModal({ kind: e.kind, entry: e })} onRemove={cashRemove} />
+          )}
+        </Card>
+
+        <Card
+          title="Giderler - Sadece Kredi Kartı"
+          actions={
+            <div className="flex items-center gap-2">
+              {totalGider > 0 && (
+                <span className="num text-sm font-medium text-neg">{formatTRY(totalGider)}</span>
+              )}
+              <button
+                className="btn-primary text-xs"
+                onClick={() => setCashModal({ kind: 'gider', entry: null })}
+              >
+                + Gider
+              </button>
+            </div>
+          }
+        >
+          {cashLoading ? (
+            <Spinner />
+          ) : giderRows.length === 0 ? (
+            <Empty>"+ Gider" ile ilk giderini gir.</Empty>
+          ) : (
+            <CashTable rows={giderRows} onEdit={(e) => setCashModal({ kind: e.kind, entry: e })} onRemove={cashRemove} />
+          )}
+        </Card>
+      </div>
+
       <Card title="Kayıtlar">
         {loading ? (
           <Spinner />
@@ -633,6 +941,28 @@ export default function Takip() {
           onSave={save}
           onClose={() => setModalOpen(false)}
         />
+      </Modal>
+
+      <Modal
+        open={cashModal !== null}
+        title={
+          cashModal?.entry
+            ? 'Kaydı Düzenle'
+            : cashModal?.kind === 'gelir'
+              ? 'Gelir Ekle'
+              : 'Gider Ekle'
+        }
+        onClose={() => setCashModal(null)}
+      >
+        {cashModal && (
+          <CashForm
+            key={cashModal.entry?.id ?? `new-${cashModal.kind}`}
+            entry={cashModal.entry}
+            kind={cashModal.kind}
+            onSave={saveCash}
+            onClose={() => setCashModal(null)}
+          />
+        )}
       </Modal>
     </div>
   )

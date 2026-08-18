@@ -47,6 +47,19 @@ export interface TakipExpense {
   amount: number
 }
 
+export type CashKind = 'gelir' | 'gider'
+
+/** Takip sayfası — ek giderlerden bağımsız gelir/gider kalemleri */
+export interface GelirGider {
+  id: string
+  user_id: string
+  entry_date: string
+  kind: CashKind
+  title: string
+  amount: number
+  created_at: string
+}
+
 export interface TakipEntry {
   id: string
   user_id: string
