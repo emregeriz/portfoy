@@ -174,7 +174,7 @@ export default function Dashboard() {
         >
           <div className="flex flex-wrap items-end gap-x-8 gap-y-3">
             <div>
-              <p className="text-2xl font-semibold text-slate-100">{formatTRY(liveNet ?? 0)}</p>
+              <p className="text-2xl font-semibold text-ink">{formatTRY(liveNet ?? 0)}</p>
               <p className="text-xs text-muted">
                 Net değer · son kayıt {formatTRY(last?.net_worth_try ?? 0)}
                 {liveChange && liveChange.percent !== null && (
@@ -185,7 +185,7 @@ export default function Dashboard() {
               </p>
             </div>
             <div>
-              <p className="text-lg text-slate-200">{formatTRY(live.total)}</p>
+              <p className="text-lg text-ink">{formatTRY(live.total)}</p>
               <p className="text-xs text-muted">Toplam varlık</p>
             </div>
             <div className="text-xs text-muted">
@@ -195,7 +195,7 @@ export default function Dashboard() {
               <p>Fiyat tarihi: {latestDate ?? '—'}</p>
             </div>
           </div>
-          {priceError && <p className="mt-2 text-xs text-rose-400">{priceError}</p>}
+          {priceError && <p className="mt-2 text-xs text-neg">{priceError}</p>}
         </Card>
       )}
 
