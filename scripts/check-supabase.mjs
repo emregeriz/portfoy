@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Supabase bağlantısını ve şemayı doğrular.
- *   npm run check:supabase
+ *   npm run check:supabases
  * .env dosyasındaki VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY değerlerini kullanır.
  */
 import { readFileSync } from 'node:fs'
