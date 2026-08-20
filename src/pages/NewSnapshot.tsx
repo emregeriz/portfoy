@@ -46,6 +46,35 @@ const DEBT_TYPES: { value: LiabilityType; label: string }[] = [
 let counter = 0
 const nextKey = () => `r${++counter}`
 
+/**
+ * Hesaplanan sayıyı input metnine çevirir: 49998.6592 → "49998,66".
+ * Binlik ayracı bilerek kullanılmaz — ayraçlı ama ondalıksız bir metin
+ * ("50.000") parseAmount tarafından 50 olarak okunurdu.
+ */
+const toInput = (n: number, digits: number) =>
+  Number.isFinite(n) && n !== 0 ? String(Number(n.toFixed(digits))).replace('.', ',') : ''
+
+/**
+ * Adet, birim fiyat ve tutar birbirine bağlıdır: ikisi doluyken üçüncüsü
+ * hesaplanır. Kullanıcının o an yazdığı alan asla ezilmez.
+ *   adet / birim fiyat değişti → tutar = adet × birim fiyat
+ *   tutar elle değişti         → birim fiyat = tutar / adet
+ */
+const linkAmounts = (row: RowDraft, patch: Partial<RowDraft>): Partial<RowDraft> => {
+  const next = { ...row, ...patch }
+  const qty = parseAmount(next.quantity)
+  const unit = parseAmount(next.unit_price)
+  const amount = parseAmount(next.amount)
+
+  if ('quantity' in patch || 'unit_price' in patch) {
+    return qty > 0 && unit > 0 ? { ...patch, amount: toInput(qty * unit, 2) } : patch
+  }
+  if ('amount' in patch) {
+    return qty > 0 && amount > 0 ? { ...patch, unit_price: toInput(amount / qty, 6) } : patch
+  }
+  return patch
+}
+
 const emptyRow = (): RowDraft => ({
   key: nextKey(),
   account_id: '',
@@ -109,9 +138,9 @@ export default function NewSnapshot() {
               account_id: p.account_id ?? '',
               symbol: p.assets?.symbol ?? '',
               kind: (p.assets?.kind ?? 'diger') as AssetKind,
-              quantity: p.quantity != null ? String(p.quantity) : '',
-              unit_price: p.unit_price != null ? String(p.unit_price) : '',
-              amount: String(p.amount),
+              quantity: p.quantity != null ? toInput(Number(p.quantity), 6) : '',
+              unit_price: p.unit_price != null ? toInput(Number(p.unit_price), 6) : '',
+              amount: toInput(Number(p.amount), 2),
               currency: p.currency,
               fx_rate: String(p.fx_rate ?? 1),
               note: p.note ?? '',
@@ -145,7 +174,9 @@ export default function NewSnapshot() {
   )
 
   const setRow = (key: string, patch: Partial<RowDraft>) =>
-    setRows((prev) => prev.map((r) => (r.key === key ? { ...r, ...patch } : r)))
+    setRows((prev) =>
+      prev.map((r) => (r.key === key ? { ...r, ...linkAmounts(r, patch) } : r))
+    )
 
   const setDebt = (key: string, patch: Partial<DebtDraft>) =>
     setDebts((prev) => prev.map((d) => (d.key === key ? { ...d, ...patch } : d)))
@@ -177,9 +208,9 @@ export default function NewSnapshot() {
             account_id: p.account_id ?? '',
             symbol: p.assets?.symbol ?? '',
             kind: (p.assets?.kind ?? 'diger') as AssetKind,
-            quantity: p.quantity != null ? String(p.quantity) : '',
-            unit_price: p.unit_price != null ? String(p.unit_price) : '',
-            amount: String(p.amount),
+            quantity: p.quantity != null ? toInput(Number(p.quantity), 6) : '',
+            unit_price: p.unit_price != null ? toInput(Number(p.unit_price), 6) : '',
+            amount: toInput(Number(p.amount), 2),
             currency: p.currency,
             fx_rate: String(p.fx_rate ?? 1),
             note: p.note ?? '',
@@ -218,7 +249,7 @@ export default function NewSnapshot() {
         if (!sym || seen.has(sym)) continue
         seen.add(sym)
         try {
-          await ensureAsset(sym, r.kind, user.id)
+          await ensureAsset(sym, r.kind)
         } catch {
           // katalog hatası fiyat çekmeyi durdurmasın
         }
@@ -259,8 +290,8 @@ export default function NewSnapshot() {
         return {
           ...r,
           fx_rate: fxRate,
-          unit_price: String(unit),
-          amount: String(qty * unit),
+          unit_price: toInput(unit, 6),
+          amount: toInput(qty * unit, 2),
         }
       })
     )
@@ -300,7 +331,7 @@ export default function NewSnapshot() {
       for (const r of filled) {
         const sym = r.symbol.trim().toUpperCase()
         if (!sym || symbolToAssetId.has(sym)) continue
-        const asset = await ensureAsset(sym, r.kind, user.id)
+        const asset = await ensureAsset(sym, r.kind)
         if (asset) symbolToAssetId.set(sym, asset.id)
       }
 
@@ -436,7 +467,7 @@ export default function NewSnapshot() {
             return (
               <div
                 key={r.key}
-                className="grid gap-2 rounded-lg border border-border bg-surface2/40 p-2 md:grid-cols-[1.2fr_1fr_.8fr_.7fr_1fr_.7fr_.8fr_1fr_auto] md:items-end md:border-0 md:bg-transparent md:p-0"
+                className="grid gap-2 rounded-lg border border-border bg-surface2/40 p-2 md:grid-cols-[1.1fr_1fr_.7fr_.7fr_.8fr_1fr_.7fr_.7fr_.9fr_auto] md:items-end md:border-0 md:bg-transparent md:p-0"
               >
                 <div>
                   <label className="label md:sr-only">Hesap</label>
@@ -494,6 +525,16 @@ export default function NewSnapshot() {
                     placeholder="Adet"
                     value={r.quantity}
                     onChange={(e) => setRow(r.key, { quantity: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="label md:sr-only">Birim fiyat</label>
+                  <input
+                    className="w-full num"
+                    inputMode="decimal"
+                    placeholder="Birim fiyat"
+                    value={r.unit_price}
+                    onChange={(e) => setRow(r.key, { unit_price: e.target.value })}
                   />
                 </div>
                 <div>

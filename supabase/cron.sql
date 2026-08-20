@@ -41,6 +41,29 @@ select cron.schedule(
   $cron$
 );
 
+-- ---------------------------------------------------------------- 2b
+-- Halka arz sabah çekimi — hafta içi 10:01 TR (07:01 UTC)
+--
+-- Yeni halka arzın ilk işlem günü seansla birlikte açılır; akşamki çekimi
+-- beklemeden değeri görmek için sabah bir tur daha atılır. Uygulamada bir
+-- arza "ilk işlem günü" tarihi girdiysen, o sabah fiyatı hazır bulursun.
+select cron.schedule(
+  'fetch-prices-morning',
+  '1 7 * * 1-5',
+  $cron$
+  select net.http_post(
+    url     := 'https://wihfycgxdvazhgnnprhz.supabase.co/functions/v1/fetch-prices',
+    headers := jsonb_build_object(
+      'Content-Type',  'application/json',
+      'Authorization', 'Bearer ' || (
+        select decrypted_secret from vault.decrypted_secrets where name = 'service_role_key'
+      )
+    ),
+    body    := '{}'::jsonb
+  );
+  $cron$
+);
+
 -- ---------------------------------------------------------------- 3
 -- Kontrol / bakım
 --   select * from cron.job;

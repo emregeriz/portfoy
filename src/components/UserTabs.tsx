@@ -10,6 +10,14 @@ interface Props {
   showTotal?: boolean
 }
 
+/**
+ * Diğer kullanıcıların verisi artık veritabanı seviyesinde de kapalı:
+ * RLS politikaları yalnızca `auth.uid() = user_id` satırlarını okutuyor
+ * (bkz. supabase/rls-per-user.sql). Bu yüzden sekmeleri açmak tek başına
+ * yetmez — önce okuma politikalarının gevşetilmesi gerekir.
+ */
+const MULTI_USER = false
+
 export default function UserTabs({
   profiles,
   currentUserId,
@@ -17,6 +25,8 @@ export default function UserTabs({
   onChange,
   showTotal = true,
 }: Props) {
+  if (!MULTI_USER) return null
+
   const tabs = [
     ...profiles.map((p) => ({
       key: p.id,

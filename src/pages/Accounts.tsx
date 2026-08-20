@@ -3,7 +3,8 @@ import { useAuth } from '../hooks/useAuth'
 import { useAccounts } from '../hooks/useAccounts'
 import { supabase } from '../lib/supabase'
 import { Badge, Card, Empty, ErrorBox, Modal, PageHeader, Spinner } from '../components/ui'
-import { CURRENCIES, formatTRY } from '../lib/currency'
+import { CURRENCIES, formatTRY, parseAmount } from '../lib/currency'
+import { formatRate } from '../lib/nema'
 import type { Account, AccountType, Currency, PositionWithRefs } from '../types/db'
 import { POSITION_SELECT } from '../hooks/useSnapshots'
 
@@ -19,6 +20,7 @@ export default function Accounts() {
   const { user } = useAuth()
   const { accounts, loading, error, reload } = useAccounts(user?.id)
   const [modal, setModal] = useState<Account | 'new' | null>(null)
+  const [showIpo, setShowIpo] = useState(false)
   const [balances, setBalances] = useState<Record<string, number>>({})
   const [formError, setFormError] = useState<string | null>(null)
 
@@ -44,7 +46,19 @@ export default function Accounts() {
     void run()
   }, [user?.id, accounts.length])
 
-  const total = useMemo(() => Object.values(balances).reduce((s, v) => s + v, 0), [balances])
+  /**
+   * Halka arz hesapları burada gizlenir — onların yeri Halka Arz sayfası.
+   * "Göster" dendiğinde salt bilgi olarak listeye katılırlar.
+   */
+  const visible = useMemo(
+    () => accounts.filter((a) => showIpo || !a.is_ipo),
+    [accounts, showIpo]
+  )
+  const ipoCount = useMemo(() => accounts.filter((a) => a.is_ipo).length, [accounts])
+  const total = useMemo(
+    () => visible.reduce((s, a) => s + (balances[a.id] ?? 0), 0),
+    [visible, balances]
+  )
 
   const submit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -56,7 +70,11 @@ export default function Accounts() {
       type: String(fd.get('type') ?? 'banka') as AccountType,
       currency: String(fd.get('currency') ?? 'TRY') as Currency,
       is_active: fd.get('is_active') === 'on',
+      // İşaretliyse hesap Halka Arz sayfasına taşınır, Nakit sayfasında görünmez
+      is_ipo: fd.get('is_ipo') === 'on',
       note: String(fd.get('note') ?? '') || null,
+      // Yıllık nemalandırma oranı — Nakit sayfası günlük faizi bundan işler
+      nema_rate: parseAmount(String(fd.get('nema_rate') ?? '')),
     }
     if (!values.name) return setFormError('Hesap adı gerekli.')
 
@@ -87,9 +105,16 @@ export default function Accounts() {
         title="Hesaplar"
         subtitle="Banka, aracı kurum, nakit ve cüzdanların."
         actions={
-          <button className="btn-primary" onClick={() => setModal('new')}>
-            + Hesap ekle
-          </button>
+          <>
+            {ipoCount > 0 && (
+              <button className="btn-ghost text-xs" onClick={() => setShowIpo((v) => !v)}>
+                {showIpo ? 'Halka arz hesaplarını gizle' : `Halka arz hesapları (${ipoCount})`}
+              </button>
+            )}
+            <button className="btn-primary" onClick={() => setModal('new')}>
+              + Hesap ekle
+            </button>
+          </>
         }
       />
 
@@ -98,7 +123,7 @@ export default function Accounts() {
       <Card className="p-0 overflow-x-auto">
         {loading ? (
           <Spinner />
-        ) : accounts.length === 0 ? (
+        ) : visible.length === 0 ? (
           <Empty>Henüz hesap yok. İlk hesabını ekle.</Empty>
         ) : (
           <table className="w-full min-w-[640px]">
@@ -113,7 +138,7 @@ export default function Accounts() {
               </tr>
             </thead>
             <tbody>
-              {accounts.map((a) => {
+              {visible.map((a) => {
                 const bal = balances[a.id] ?? 0
                 return (
                   <tr key={a.id} className="hover:bg-surface2/50">
@@ -125,8 +150,16 @@ export default function Accounts() {
                       <Badge tone={a.is_active ? 'accent' : 'muted'}>
                         {TYPES.find((t) => t.value === a.type)?.label ?? a.type}
                       </Badge>
+                      {a.is_ipo && <span className="ml-1 text-xs text-muted">halka arz</span>}
                     </td>
-                    <td className="td text-muted">{a.currency}</td>
+                    <td className="td text-muted">
+                      {a.currency}
+                      {Number(a.nema_rate) > 0 && (
+                        <span className="ml-2 text-xs text-accent">
+                          %{formatRate(a.nema_rate)} nema
+                        </span>
+                      )}
+                    </td>
                     <td className="td text-right num">{formatTRY(bal)}</td>
                     <td className="td text-right num text-muted">
                       {total ? ((bal / total) * 100).toFixed(1).replace('.', ',') : '0,0'}%
@@ -193,9 +226,21 @@ export default function Accounts() {
               </select>
             </div>
           </div>
-          <div>
-            <label className="label">Not</label>
-            <input name="note" className="w-full" defaultValue={editing?.note ?? ''} />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Nemalandırma (yıllık %)</label>
+              <input
+                name="nema_rate"
+                className="w-full num"
+                inputMode="decimal"
+                placeholder="0"
+                defaultValue={editing?.nema_rate ? formatRate(editing.nema_rate) : ''}
+              />
+            </div>
+            <div>
+              <label className="label">Not</label>
+              <input name="note" className="w-full" defaultValue={editing?.note ?? ''} />
+            </div>
           </div>
           <label className="flex items-center gap-2 text-sm">
             <input
@@ -205,6 +250,15 @@ export default function Accounts() {
               className="w-4 h-4"
             />
             Aktif
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              name="is_ipo"
+              defaultChecked={editing?.is_ipo ?? false}
+              className="w-4 h-4"
+            />
+            Halka arz hesabı — Halka Arz sayfasında listelenir, Nakit sayfasında görünmez
           </label>
 
           {formError && <ErrorBox message={formError} />}

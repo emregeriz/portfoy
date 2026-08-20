@@ -2,17 +2,21 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 import { useAuth } from '../hooks/useAuth'
 import { useTheme } from '../hooks/useTheme'
+import TodayReturn from './TodayReturn'
 
+/**
+ * Üst menü. `key` alanı `profiles.nav_hidden` ile eşleşir: bir sayfayı
+ * yalnızca belirli kullanıcıdan kaldırmak için o kullanıcının profiline
+ * anahtarı eklemek yeter, kod değişmez.
+ */
 const NAV = [
-  { to: '/', label: 'Dashboard', end: true },
-  { to: '/takip', label: 'Takip' },
-  { to: '/snapshot/new', label: 'Yeni Giriş' },
-  { to: '/history', label: 'Geçmiş' },
-  { to: '/accounts', label: 'Hesaplar' },
-  { to: '/ipo', label: 'Halka Arz' },
-  { to: '/transactions', label: 'Gelir / Gider' },
-  { to: '/debts', label: 'Borç & Alacak' },
-  { to: '/compare', label: 'Karşılaştır' },
+  { key: 'dashboard', to: '/', label: 'Dashboard', end: true },
+  { key: 'takip', to: '/takip', label: 'Takip' },
+  { key: 'trades', to: '/trades', label: 'Alım / Satım' },
+  { key: 'accounts', to: '/accounts', label: 'Hesaplar' },
+  { key: 'nakit', to: '/nakit', label: 'Nakit' },
+  { key: 'ipo', to: '/ipo', label: 'Halka Arz' },
+  { key: 'transactions', to: '/transactions', label: 'Gelir / Gider' },
 ]
 
 export default function Layout() {
@@ -21,6 +25,9 @@ export default function Layout() {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+
+  const hidden = new Set(profile?.nav_hidden ?? [])
+  const nav = NAV.filter((item) => !hidden.has(item.key))
 
   const handleSignOut = async () => {
     await signOut()
@@ -35,14 +42,14 @@ export default function Layout() {
             ₺ Portföy
           </NavLink>
 
-          <nav className="hidden md:flex items-center gap-1 flex-1">
-            {NAV.map((item) => (
+          <nav className="hidden md:flex items-center gap-1 flex-1 min-w-0 overflow-x-auto">
+            {nav.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
                 end={item.end}
                 className={({ isActive }) =>
-                  `px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                  `px-3 py-1.5 rounded-lg text-sm whitespace-nowrap shrink-0 transition-colors ${
                     isActive ? 'bg-accent/15 text-accent' : 'text-muted hover:text-ink hover:bg-surface2'
                   }`
                 }
@@ -53,6 +60,8 @@ export default function Layout() {
           </nav>
 
           <div className="ml-auto flex items-center gap-3">
+            <TodayReturn />
+
             <div className="relative hidden sm:block">
               <button
                 onClick={() => setMenuOpen((v) => !v)}
@@ -128,7 +137,7 @@ export default function Layout() {
 
         {open && (
           <nav className="md:hidden border-t border-border grid grid-cols-2 gap-1 p-2">
-            {[...NAV, { to: '/reminders', label: 'Hatırlatıcılar', end: undefined }].map((item) => (
+            {[...nav, { key: 'reminders', to: '/reminders', label: 'Hatırlatıcılar', end: undefined }].map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}

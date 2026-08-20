@@ -11,6 +11,8 @@ export interface Profile {
   display_name: string
   base_currency: string
   color: string | null
+  /** Üst menüde gizlenecek sayfa anahtarları — kullanıcıya özel menü */
+  nav_hidden: string[]
   created_at: string
 }
 
@@ -22,6 +24,12 @@ export interface Account {
   currency: Currency
   is_active: boolean
   note: string | null
+  /** Yıllık nemalandırma oranı — yüzde olarak (Midas: 34,5). 0 ise faiz işlemez */
+  nema_rate: number
+  /** Nemalandırmanın başladığı gün; boşsa ilk para hareketinden itibaren */
+  nema_start: string | null
+  /** Halka arz için kullanılan hesap — Halka Arz sayfası bunları listeler */
+  is_ipo: boolean
   created_at: string
 }
 
@@ -125,6 +133,10 @@ export interface Receivable {
   expected_date: string | null
   is_collected: boolean
   collected_date: string | null
+  /** Parayı hangi hesaptan verdim — bakiyeden o hesap düşüldü */
+  account_id: string | null
+  /** Geri aldığımda hangi hesaba yattı */
+  collected_account_id: string | null
   note: string | null
   created_at: string
 }
@@ -178,7 +190,9 @@ export interface NetWorthRow {
 // (eski ipo_participations tablosu yerini bu üçlüye bıraktı)
 // --------------------------------------------------------------------
 export type IpoState = 'talep_verildi' | 'dagitildi' | 'islemde' | 'satildi' | 'iptal'
-export type LedgerKind = 'iade' | 'satis' | 'cekim' | 'diger'
+export type LedgerKind =
+  | 'giris' | 'iade' | 'satis' | 'transfer' | 'cikis'
+  | 'cekim' | 'nema' | 'borc' | 'tahsil' | 'diger'
 
 export interface IpoRow {
   id: string
@@ -187,6 +201,10 @@ export interface IpoRow {
   bist_code: string | null
   ipo_date: string | null
   lot_price: number | null
+  /** Her hesaptan talep edilen lot — hesap işaretlenince bu yazılır */
+  default_lot: number | null
+  /** Borsada işlem görmeye başladığı gün */
+  trade_start_date: string | null
   status: IpoState
   manual_price: number | null
   sold_date: string | null
@@ -203,17 +221,38 @@ export interface IpoEntry {
   requested_lot: number
   participated: boolean
   allocated_lot: number
+  /** Bu hesaptan satılan lot — kalan kısım elde tutuluyor demektir */
+  sold_lot: number
+  sold_price: number | null
+  sold_date: string | null
   created_at: string
 }
 
 /** v_ipo_entries — tutarlar arzın lot fiyatından türetilir */
 export interface IpoEntryView extends Omit<IpoEntry, 'created_at'> {
+  account_name: string
   ipo_name: string
+  bist_code: string | null
   status: IpoState
   lot_price: number | null
   requested_amount: number
   cost: number
   refund: number
+  proceeds: number
+  realized_profit: number
+  open_lot: number
+}
+
+/** v_ipo_account_summary — hangi hesaptan ne kadar kazandım */
+export interface IpoAccountSummary {
+  user_id: string
+  account_id: string
+  account_name: string
+  ipo_count: number
+  total_lot: number
+  total_cost: number
+  total_proceeds: number
+  realized_profit: number
 }
 
 export interface LedgerRow {
@@ -222,8 +261,13 @@ export interface LedgerRow {
   account_id: string
   ipo_id: string | null
   kind: LedgerKind
+  /** + giriş, − çıkış */
   amount: number
+  /** Borç verme / tahsilat hareketini alacak kaydına bağlar */
+  receivable_id: string | null
   date: string
+  /** Aktarım çiftini eşleştirir — biri eksi biri artı */
+  transfer_id: string | null
   note: string | null
   created_at: string
 }
@@ -232,6 +276,7 @@ export interface AccountBalance {
   account_id: string
   balance: number
   last_move: string | null
+  user_id: string
 }
 
 // --------------------------------------------------------------------
@@ -250,4 +295,32 @@ export interface Reminder {
   is_active: boolean
   last_sent_on: string | null
   created_at: string
+}
+
+// --------------------------------------------------------------------
+// Alım / satım defteri — her işlem ayrı kayıt, pozisyon bunlardan türer
+// --------------------------------------------------------------------
+export type TradeSide = 'alis' | 'satis'
+
+export interface Trade {
+  id: string
+  user_id: string
+  account_id: string | null
+  asset_id: string | null
+  side: TradeSide
+  trade_date: string
+  quantity: number
+  unit_price: number
+  /** Gerçekleşen toplam tutar — adet × birim fiyattan küsurat farkı olabilir */
+  amount: number
+  currency: Currency
+  fx_rate: number
+  amount_try: number
+  note: string | null
+  created_at: string
+}
+
+export interface TradeWithRefs extends Trade {
+  accounts: Pick<Account, 'id' | 'name' | 'type'> | null
+  assets: Pick<Asset, 'id' | 'symbol' | 'name' | 'kind'> | null
 }

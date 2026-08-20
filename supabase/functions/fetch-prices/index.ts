@@ -122,15 +122,36 @@ async function coingecko(ids: string[]): Promise<Record<string, number>> {
 }
 
 // ----------------------------------------------------------------- Yahoo
-async function yahoo(symbol: string): Promise<{ price: number; currency: string } | null> {
+/**
+ * Son fiyat + günlük kapanış serisi.
+ *
+ * Yahoo zaten 5 günlük seriyi aynı yanıtta veriyor; sadece son fiyatı alıp
+ * gerisini atmak yerine günleri de yazıyoruz. Yeni eklenen bir hisse
+ * (özellikle yeni halka arz) böylece ilk günden "bugün ne kadar oynadı"
+ * hesabına girebiliyor.
+ */
+async function yahoo(
+  symbol: string,
+): Promise<{ price: number; currency: string; history: { date: string; price: number }[] } | null> {
   const url = 'https://query1.finance.yahoo.com/v8/finance/chart/' +
-    encodeURIComponent(symbol) + '?interval=1d&range=5d'
+    encodeURIComponent(symbol) + '?interval=1d&range=1mo'
   const res = await tryFetch(url, { headers: { 'User-Agent': UA } })
   if (!res.ok) return null
   const j = await res.json()
-  const meta = j?.chart?.result?.[0]?.meta
+  const result = j?.chart?.result?.[0]
+  const meta = result?.meta
   const price = meta?.regularMarketPrice
-  return typeof price === 'number' ? { price, currency: meta?.currency ?? 'TRY' } : null
+  if (typeof price !== 'number') return null
+
+  const stamps: number[] = result?.timestamp ?? []
+  const closes: (number | null)[] = result?.indicators?.quote?.[0]?.close ?? []
+  const history: { date: string; price: number }[] = []
+  for (let i = 0; i < stamps.length; i++) {
+    const c = closes[i]
+    if (typeof c !== 'number' || !(c > 0)) continue
+    history.push({ date: new Date(stamps[i] * 1000).toISOString().slice(0, 10), price: c })
+  }
+  return { price, currency: meta?.currency ?? 'TRY', history }
 }
 
 // -------------------------------------------------------------- Fonoloji
@@ -147,6 +168,36 @@ async function fonoloji(code: string, key: string): Promise<{ price: number; dat
   return { price, date: String(f?.current_date ?? '').slice(0, 10) || today() }
 }
 
+/**
+ * Fonun geçmiş fiyat serisi.
+ *
+ * Yeni eklenen bir fonun tek günlük fiyatı olur; "bugünkü getiri" için
+ * önceki günün fiyatı da gerekir. Bu uç nokta geçmişi tek çağrıda getirir.
+ * Dönüş biçimi sürüme göre dizi ya da sarmalanmış olabildiği için birkaç
+ * olası alan denenir.
+ */
+async function fonolojiHistory(
+  code: string,
+  key: string,
+  period = '1m',
+): Promise<{ date: string; price: number }[]> {
+  const res = await tryFetch(
+    'https://fonoloji.com/v1/funds/' + encodeURIComponent(code) + '/history?period=' + period,
+    { headers: { 'X-API-Key': key, Accept: 'application/json' } },
+    2,
+  )
+  const j = await res.json().catch(() => null)
+  if (!res.ok) throw new Error(j?.error ?? 'Fonoloji history HTTP ' + res.status)
+  const arr = Array.isArray(j) ? j : (j?.history ?? j?.data ?? j?.points ?? j?.nav ?? [])
+  if (!Array.isArray(arr)) return []
+  return arr
+    .map((p: Record<string, unknown>) => ({
+      date: String(p?.date ?? '').slice(0, 10),
+      price: Number(p?.price ?? p?.value ?? p?.nav),
+    }))
+    .filter((p) => /^\d{4}-\d{2}-\d{2}$/.test(p.date) && Number.isFinite(p.price) && p.price > 0)
+}
+
 // ================================================================== main
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
@@ -156,6 +207,13 @@ Deno.serve(async (req: Request) => {
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
   )
   const fonKey = Deno.env.get('FONOLOJI_API_KEY') ?? ''
+
+  // { backfill: true } → geçmişi olsun olmasın bütün fonların serisi çekilir
+  // { backfillPeriod: '3m' } → çekilecek aralık (1w | 1m | 3m | 1y | ytd)
+  const body = (await req.json().catch(() => ({}))) as {
+    backfill?: boolean
+    backfillPeriod?: string
+  }
 
   const log: string[] = []
   const errors: string[] = []
@@ -236,6 +294,16 @@ Deno.serve(async (req: Request) => {
       if (q) {
         const rate = q.currency === 'TRY' ? 1 : (fx[q.currency] ?? 1)
         priceRows.push({ asset_id: a.id, date: today(), price: q.price * rate, currency: 'TRY', source: 'yahoo' })
+        // Geçmiş günler; bugünün satırı zaten yazıldığı için tekilleştirmede elenir
+        for (const h of q.history) {
+          priceRows.push({
+            asset_id: a.id,
+            date: h.date,
+            price: h.price * rate,
+            currency: 'TRY',
+            source: 'yahoo-history',
+          })
+        }
         n++
       }
     }
@@ -257,6 +325,65 @@ Deno.serve(async (req: Request) => {
       }
     }
     if (funds.length) log.push('Fon: ' + n + '/' + funds.length + ' varlık')
+
+    // --- eksik geçmişi tamamla ---------------------------------------
+    // Yeni eklenen fonun tek günlük fiyatı olur; günlük değişim
+    // hesaplanamaz. Elinde iki günden az fiyat olan fonların serisi bir
+    // kez çekilir, sonraki günlerde bu blok kendiliğinden atlanır.
+    if (funds.length) {
+      const since = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
+      const { data: known } = await supabase
+        .from('asset_prices')
+        .select('asset_id, date')
+        .in('asset_id', funds.map((f) => f.id))
+        .gte('date', since)
+
+      const dates = new Map<string, Set<string>>()
+      for (const r of (known ?? []) as { asset_id: string; date: string }[]) {
+        const set = dates.get(r.asset_id) ?? new Set<string>()
+        set.add(r.date)
+        dates.set(r.asset_id, set)
+      }
+
+      // Geçmişi eksik olan fon: hiç karşılaştırma yapılamayacak kadar az
+      // fiyatı var ya da serisinde boşluk kalmış (günlük çekim birkaç gün
+      // çalışmamış). İkisi de "dünkü fiyat yok" demek.
+      const gapLimit = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10)
+      const needy = body.backfill
+        ? funds
+        : funds.filter((f) => {
+          const set = dates.get(f.id)
+          if (!set || set.size < 2) return true
+          let newest = ''
+          for (const d of set) if (d > newest) newest = d
+          return newest < gapLimit
+        })
+
+      let filled = 0
+      for (const a of needy) {
+        try {
+          const hist = await fonolojiHistory(
+            a.price_ref?.trim() || a.symbol.toUpperCase(),
+            fonKey,
+            body.backfillPeriod ?? '1m',
+          )
+          for (const h of hist) {
+            priceRows.push({
+              asset_id: a.id,
+              date: h.date,
+              price: h.price,
+              currency: 'TRY',
+              source: 'fonoloji-history',
+            })
+            filled++
+          }
+        } catch (e) {
+          // Geçmiş çekilemezse günlük fiyat yine de yazılsın
+          errors.push('Fon geçmişi (' + a.symbol + '): ' + msg(e))
+        }
+      }
+      if (needy.length) log.push('Fon geçmişi: ' + needy.length + ' fon, ' + filled + ' gün')
+    }
   } catch (e) {
     errors.push('Fon: ' + msg(e))
   }
@@ -266,13 +393,24 @@ Deno.serve(async (req: Request) => {
     const { error } = await supabase.from('fx_rates').upsert(fxRows, { onConflict: 'date,currency' })
     if (error) errors.push('fx_rates yazılamadı: ' + error.message)
   }
-  if (priceRows.length) {
-    const { error } = await supabase.from('asset_prices').upsert(priceRows, { onConflict: 'asset_id,date' })
+  // Geçmiş serisi bugünü de kapsayabildiği için aynı (varlık, gün) iki kez
+  // listeye girebilir. Postgres tek upsert'te aynı satıra iki kez dokunmayı
+  // reddettiği için önce tekilleştirilir; ilk yazan (güncel fiyat) kazanır.
+  const seen = new Set<string>()
+  const uniqueRows = priceRows.filter((r) => {
+    const k = r.asset_id + '|' + r.date
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
+
+  if (uniqueRows.length) {
+    const { error } = await supabase.from('asset_prices').upsert(uniqueRows, { onConflict: 'asset_id,date' })
     if (error) errors.push('asset_prices yazılamadı: ' + error.message)
   }
 
   return new Response(
-    JSON.stringify({ ok: errors.length === 0, fx: fxRows.length, prices: priceRows.length, log, errors }),
+    JSON.stringify({ ok: errors.length === 0, fx: fxRows.length, prices: uniqueRows.length, log, errors }),
     { headers: { ...CORS, 'Content-Type': 'application/json' } },
   )
 })

@@ -84,7 +84,9 @@ export default function Compare() {
         {loading ? (
           <Spinner />
         ) : profiles.length < 2 ? (
-          <Empty>Karşılaştırma için en az iki profil gerekli.</Empty>
+          <Empty>
+            Her kullanıcı yalnızca kendi verisini görür; karşılaştırılacak ikinci profil yok.
+          </Empty>
         ) : (
           <NetWorthChart data={data} series={series} type="line" height={340} />
         )}

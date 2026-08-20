@@ -6,8 +6,9 @@ import { useAuth } from '../hooks/useAuth'
 import { useNetWorth, useSnapshots, usePositionsForSnapshots } from '../hooks/useSnapshots'
 import { usePrices } from '../hooks/usePrices'
 import { useIpos, ipoStats } from '../hooks/useIpos'
+import { useCash } from '../hooks/useCash'
 import { useTable } from '../hooks/useTable'
-import type { Liability } from '../types/db'
+import type { AssetKind, Liability, TradeWithRefs } from '../types/db'
 import UserTabs from '../components/UserTabs'
 import StatCard from '../components/StatCard'
 import NetWorthChart, { type ChartPoint } from '../components/NetWorthChart'
@@ -21,10 +22,20 @@ import {
   change,
   limitByPeriod,
   sumSeriesByDate,
+  todayISO,
+  KIND_LABELS,
   PERIOD_LABELS,
   type Period,
 } from '../lib/calc'
 import { formatPercent, formatTRY } from '../lib/currency'
+import {
+  computeHoldings,
+  holdingTotals,
+  holdingsByAccount,
+  holdingsByKind,
+  holdingsSeries,
+  DEFAULT_TAX_RATE,
+} from '../lib/holdings'
 
 export default function Dashboard() {
   const { profiles, user } = useAuth()
@@ -74,14 +85,78 @@ export default function Dashboard() {
   }, [last, snapshots, rows, isTotal])
 
   const { positions, loading: posLoading } = usePositionsForSnapshots(latestSnapshotIds)
+  const { byAssetId, bySymbol, latestDate, refreshing, refresh, error: priceError } = usePrices()
 
-  const byKind = useMemo(() => allocationByKind(positions), [positions])
-  const byAccount = useMemo(() => allocationByAccount(positions), [positions])
+  /**
+   * Alım/satım defteri. Buradaki semboller snapshot kalemlerinden ayrı
+   * sayılır; ikisinde birden geçen varlık çift sayılmasın diye snapshot
+   * tarafı bu semboller için yok sayılır (aşağıda tradedAssetIds).
+   */
+  const { rows: trades } = useTable<TradeWithRefs>('trades', {
+    userId: isTotal ? null : effectiveScope,
+    orderBy: 'trade_date',
+    select: '*, accounts:account_id (id, name, type), assets:asset_id (id, symbol, name, kind)',
+  })
+
+  const tradedAssetIds = useMemo(
+    () => new Set(trades.map((t) => t.asset_id).filter(Boolean) as string[]),
+    [trades]
+  )
+  /** Snapshot kalemlerinden, alım/satım defterinde de olanları çıkar */
+  const snapshotPositions = useMemo(
+    () => positions.filter((p) => !p.asset_id || !tradedAssetIds.has(p.asset_id)),
+    [positions, tradedAssetIds]
+  )
+
+  const holdings = useMemo(() => computeHoldings(trades, bySymbol), [trades, bySymbol])
+  const tradeTotals = useMemo(() => holdingTotals(holdings), [holdings])
+  const tradeSeries = useMemo(
+    () => holdingsSeries(trades, bySymbol, todayISO()),
+    [trades, bySymbol]
+  )
+
+  /** Snapshot kalemleri + alım/satım pozisyonları tek dağılımda */
+  const byKind = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const s of allocationByKind(snapshotPositions)) map.set(s.key, s.value)
+    for (const h of holdingsByKind(holdings)) map.set(h.key, (map.get(h.key) ?? 0) + h.value)
+    return [...map.entries()]
+      .map(([key, value]) => ({ key, label: KIND_LABELS[key as AssetKind] ?? key, value }))
+      .filter((s) => s.value !== 0)
+      .sort((a, b) => b.value - a.value)
+  }, [snapshotPositions, holdings])
+
+  const byAccount = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const s of allocationByAccount(snapshotPositions)) map.set(s.key, s.value)
+    for (const h of holdingsByAccount(trades, holdings)) {
+      map.set(h.key, (map.get(h.key) ?? 0) + h.value)
+    }
+    return [...map.entries()]
+      .map(([key, value]) => ({ key, label: key, value }))
+      .filter((s) => s.value !== 0)
+      .sort((a, b) => b.value - a.value)
+  }, [snapshotPositions, trades, holdings])
+
+  /** Fon/sembol bazlı vergi sonrası toplam kazanç */
+  const fundProfit = useMemo(
+    () =>
+      holdings
+        .map((h) => ({
+          key: h.symbol,
+          label: h.symbol,
+          value: h.realizedNet + (h.unrealized ?? 0) - (h.potentialTax ?? 0),
+        }))
+        .filter((s) => Math.abs(s.value) > 0.005)
+        .sort((a, b) => b.value - a.value),
+    [holdings]
+  )
 
   const netChange = change(last?.net_worth_try ?? 0, prev?.net_worth_try)
-
-  const { byAssetId, bySymbol, latestDate, refreshing, refresh, error: priceError } = usePrices()
   const { ipos, entries, totalWaiting } = useIpos(isTotal ? null : effectiveScope)
+
+  /** Kendi hesaplarındaki nakit — Nakit sayfasının toplamı (halka arz hariç) */
+  const { totals: cashTotals } = useCash(isTotal ? null : effectiveScope)
 
   /**
    * Snapshot'a bağlı olmayan açık borçlar — kredi kartı, fatura vb.
@@ -123,7 +198,8 @@ export default function Dashboard() {
             ? Number(bySymbol.get(code)!.price)
             : null
         const st = ipoStats(i, entries, price)
-        return s + (st.holding ?? st.cost)
+        // Elde tutulan (satılmamış) lotun değeri; fiyat yoksa maliyetiyle sayılır
+        return s + (st.holding ?? st.openLot * Number(i.lot_price ?? 0))
       }, 0)
     return { waiting: totalWaiting, held, total: totalWaiting + held }
   }, [ipos, entries, bySymbol, totalWaiting])
@@ -133,10 +209,10 @@ export default function Dashboard() {
    * Adedi veya fiyatı olmayan kalemler snapshot'taki tutarıyla sayılır.
    */
   const live = useMemo(() => {
-    if (!positions.length) return null
+    if (!snapshotPositions.length) return null
     let total = 0
     let priced = 0
-    for (const p of positions) {
+    for (const p of snapshotPositions) {
       const lp = p.asset_id ? byAssetId.get(p.asset_id) : undefined
       const qty = Number(p.quantity ?? 0)
       if (lp && qty > 0) {
@@ -146,12 +222,22 @@ export default function Dashboard() {
         total += Number(p.amount_try ?? 0)
       }
     }
-    return { total, priced, count: positions.length }
-  }, [positions, byAssetId])
+    return { total, priced, count: snapshotPositions.length }
+  }, [snapshotPositions, byAssetId])
 
-  const liveAssets = (live?.total ?? last?.total_assets_try ?? 0) + ipoTotal.total
-  const showLive = (live && live.priced > 0) || ipoTotal.total > 0 || openDebtTotal > 0
-  const liveNet = showLive ? liveAssets - (last?.total_liabilities_try ?? 0) - openDebtTotal : null
+  const liveAssets =
+    (live?.total ?? (tradedAssetIds.size ? 0 : last?.total_assets_try ?? 0)) +
+    ipoTotal.total +
+    tradeTotals.value +
+    cashTotals.cash
+  const showLive =
+    (live && live.priced > 0) ||
+    ipoTotal.total > 0 ||
+    openDebtTotal > 0 ||
+    tradeTotals.value > 0 ||
+    cashTotals.cash > 0
+  const totalDebt = (last?.total_liabilities_try ?? 0) + openDebtTotal
+  const liveNet = showLive ? liveAssets - totalDebt : null
   const liveChange = liveNet != null ? change(liveNet, last?.net_worth_try) : null
 
   return (
@@ -164,8 +250,8 @@ export default function Dashboard() {
             : 'Henüz kayıt yok'
         }
         actions={
-          <Link to="/snapshot/new" className="btn-primary">
-            + Yeni Giriş
+          <Link to="/trades" className="btn-primary">
+            + İşlem ekle
           </Link>
         }
       />
@@ -222,22 +308,35 @@ export default function Dashboard() {
       )}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard title="Toplam Varlık" value={last?.total_assets_try ?? 0} />
+        <StatCard
+          title="Toplam Varlık"
+          value={liveAssets}
+          hint={
+            tradeTotals.value > 0
+              ? `${formatTRY(tradeTotals.value)} alım/satım pozisyonu dahil`
+              : undefined
+          }
+        />
         <StatCard
           title="Toplam Borç"
-          value={last?.total_liabilities_try ?? 0}
-          tone={(last?.total_liabilities_try ?? 0) > 0 ? 'neg' : 'neutral'}
+          value={totalDebt}
+          tone={totalDebt > 0 ? 'neg' : 'neutral'}
         />
         <StatCard
           title="Net Değer"
-          value={last?.net_worth_try ?? 0}
+          value={liveNet ?? last?.net_worth_try ?? 0}
           change={netChange}
-          tone={(last?.net_worth_try ?? 0) >= 0 ? 'pos' : 'neg'}
+          tone={(liveNet ?? 0) >= 0 ? 'pos' : 'neg'}
         />
         <StatCard
-          title="Kayıt Sayısı"
-          value={String(raw.length)}
-          hint={prev ? `Önceki: ${formatTRY(prev.net_worth_try)}` : 'Karşılaştırma için 2. kayıt gerekli'}
+          title="Vergi Sonrası Kazanç"
+          value={tradeTotals.netProfit}
+          tone={tradeTotals.netProfit >= 0 ? 'pos' : 'neg'}
+          hint={
+            tradeTotals.totalTax > 0
+              ? `${formatTRY(tradeTotals.totalTax)} vergi düşüldü`
+              : 'Alım/satım kaydı yok'
+          }
         />
       </div>
 
@@ -272,13 +371,40 @@ export default function Dashboard() {
                 <p className="text-xs text-muted">Açık borç & fatura</p>
               </div>
             )}
-            {ipoTotal.total > 0 && (
+            {tradeTotals.value > 0 && (
               <div>
-                <p className="text-lg text-ink">{formatTRY(ipoTotal.total)}</p>
+                <p className="text-lg text-ink">{formatTRY(tradeTotals.value)}</p>
                 <p className="text-xs text-muted">
-                  Hesaplarda {formatTRY(ipoTotal.waiting)} nakit
-                  {ipoTotal.held > 0 && ` + ${formatTRY(ipoTotal.held)} halka arz hissesi`}
+                  Fon &amp; hisse pozisyonları ·{' '}
+                  <span className={tradeTotals.unrealized >= 0 ? 'text-pos' : 'text-neg'}>
+                    {formatTRY(tradeTotals.unrealized)} kâr
+                  </span>
                 </p>
+              </div>
+            )}
+            {cashTotals.cash > 0 && (
+              <div>
+                <p className="text-lg text-ink">{formatTRY(cashTotals.cash)}</p>
+                <p className="text-xs text-muted">
+                  Hesaplardaki nakit
+                  {cashTotals.todayNema > 0 && (
+                    <span className="text-pos"> · bugün +{formatTRY(cashTotals.todayNema)} nema</span>
+                  )}
+                </p>
+              </div>
+            )}
+            {ipoTotal.waiting > 0 && (
+              <div>
+                <p className="text-lg text-pos">{formatTRY(ipoTotal.waiting)}</p>
+                <p className="text-xs text-muted">
+                  <Link to="/ipo" className="hover:text-ink">Halka arz iadesi</Link> · çekilmeyi bekliyor
+                </p>
+              </div>
+            )}
+            {ipoTotal.held > 0 && (
+              <div>
+                <p className="text-lg text-ink">{formatTRY(ipoTotal.held)}</p>
+                <p className="text-xs text-muted">Elde tutulan halka arz hissesi</p>
               </div>
             )}
             <div className="text-xs text-muted">
@@ -306,12 +432,44 @@ export default function Dashboard() {
         )}
       </Card>
 
+      {tradeSeries.length > 0 && (
+        <Card title="Pozisyon Değeri (alım / satım)">
+          <NetWorthChart
+            data={tradeSeries.map((p) => ({
+              date: p.date,
+              deger: p.value,
+              vergiSonrasi: p.netValue,
+              maliyet: p.cost,
+            }))}
+            series={[
+              { key: 'deger', label: 'Değer', color: '#22c55e' },
+              { key: 'vergiSonrasi', label: 'Vergi sonrası', color: '#f59e0b' },
+              { key: 'maliyet', label: 'Maliyet', color: '#94a3b8' },
+            ]}
+          />
+          <p className="mt-2 text-xs text-muted">
+            Turuncu çizgi, o gün satılsaydı %{(DEFAULT_TAX_RATE * 100).toFixed(1).replace('.', ',')}{' '}
+            stopaj sonrası cebe kalacak tutarı gösterir. Noktalar işlem tarihlerinden geçer; ara
+            günler için geçmiş fiyat tutulmuyor.
+          </p>
+        </Card>
+      )}
+
+      {fundProfit.length > 0 && (
+        <Card title="Fon Bazlı Kâr / Zarar">
+          <AccountBar data={fundProfit} />
+          <p className="mt-2 text-xs text-muted">
+            Her fonun gerçekleşen (satılmış) ve açık kârı toplanır, vergi düşülür.
+          </p>
+        </Card>
+      )}
+
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Varlık Dağılımı">
-          {posLoading ? <Spinner /> : byKind.length ? <AllocationPie data={byKind} /> : <Empty>Son kayıtta kalem yok.</Empty>}
+          {posLoading ? <Spinner /> : byKind.length ? <AllocationPie data={byKind} /> : <Empty>Henüz kalem yok.</Empty>}
         </Card>
         <Card title="Hesap Bazlı Dağılım">
-          {posLoading ? <Spinner /> : byAccount.length ? <AccountBar data={byAccount} /> : <Empty>Son kayıtta kalem yok.</Empty>}
+          {posLoading ? <Spinner /> : byAccount.length ? <AccountBar data={byAccount} /> : <Empty>Henüz kalem yok.</Empty>}
         </Card>
       </div>
     </div>
