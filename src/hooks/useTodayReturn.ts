@@ -218,9 +218,14 @@ export function useTodayReturn(userId?: string | null): TodayReturnData {
 
       const ipoLots = ipoPositions.reduce((sum, p) => sum + p.qty, 0)
 
+      /**
+       * Arz olarak sayılan sembolün alım/satım tarafı ayrıca sayılmaz —
+       * aynı kâğıt hem "X arz" hem "X" diye iki kez getiriye yazılıyordu.
+       */
+      const ipoAssetIds = new Set(ipoPositions.map((p) => p.assetId))
       const items: Position[] = [
         ...[...portfolio.entries()]
-          .filter(([, q]) => q > 1e-9)
+          .filter(([assetId, q]) => q > 1e-9 && !ipoAssetIds.has(assetId))
           .map(([assetId, qty]) => ({ assetId, qty, source: 'portfoy' as const })),
         ...ipoPositions,
       ]
@@ -316,7 +321,8 @@ export function useTodayReturn(userId?: string | null): TodayReturnData {
         nema,
         ipoLots,
         priceDate,
-        movers: movers.slice(0, 8),
+        // Tamamı döner; bileşen ilk 10'u gösterir, "daha fazla" ile açılır
+        movers,
         unmeasured,
       })
       setError(null)

@@ -13,11 +13,15 @@ import { todayISO } from '../lib/calc'
  * Tıklayınca kırılım açılır: fon/hisse fiyat hareketi, halka arz hisselerinin
  * değişimi, nema geliri ve en çok oynayan kalemler.
  */
+/** Kırılımda başta görünen kalem sayısı — gerisi "daha fazla göster" ile açılır */
+const MOVERS_SHOWN = 10
+
 export default function TodayReturn() {
   const { user } = useAuth()
   const { total, priceDelta, ipoDelta, nema, ipoLots, priceDate, movers, unmeasured, loading, error, reload } =
     useTodayReturn(user?.id)
   const [open, setOpen] = useState(false)
+  const [showAllMovers, setShowAllMovers] = useState(false)
 
   if (loading) {
     return (
@@ -87,9 +91,9 @@ export default function TodayReturn() {
             </div>
 
             {movers.length > 0 && (
-              <div className="px-3 py-2 border-t border-border space-y-1">
+              <div className="px-3 py-2 border-t border-border space-y-1 max-h-72 overflow-y-auto">
                 <div className="text-[11px] uppercase tracking-wide text-muted">En çok oynayan</div>
-                {movers.map((m) => (
+                {(showAllMovers ? movers : movers.slice(0, MOVERS_SHOWN)).map((m) => (
                   <div key={`${m.source}:${m.symbol}`} className="flex justify-between gap-3 text-xs">
                     <span className="text-ink">
                       {m.symbol}
@@ -109,6 +113,17 @@ export default function TodayReturn() {
                     </span>
                   </div>
                 ))}
+                {movers.length > MOVERS_SHOWN && (
+                  <button
+                    type="button"
+                    className="w-full text-center text-[11px] text-muted hover:text-ink pt-1"
+                    onClick={() => setShowAllMovers((v) => !v)}
+                  >
+                    {showAllMovers
+                      ? 'Daha az göster'
+                      : `Daha fazla göster (${movers.length - MOVERS_SHOWN})`}
+                  </button>
+                )}
               </div>
             )}
 

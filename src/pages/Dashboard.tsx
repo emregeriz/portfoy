@@ -8,24 +8,21 @@ import { usePrices } from '../hooks/usePrices'
 import { useIpos, ipoStats } from '../hooks/useIpos'
 import { useCash } from '../hooks/useCash'
 import { useTable } from '../hooks/useTable'
+import { TRADE_SELECT } from '../hooks/useTrades'
 import type { AssetKind, Liability, TradeWithRefs } from '../types/db'
 import UserTabs from '../components/UserTabs'
 import StatCard from '../components/StatCard'
-import NetWorthChart, { type ChartPoint } from '../components/NetWorthChart'
+import NetWorthChart from '../components/NetWorthChart'
 import AllocationPie from '../components/AllocationPie'
 import AccountBar from '../components/AccountBar'
 import { Card, Empty, ErrorBox, PageHeader, Spinner } from '../components/ui'
 import {
   allocationByAccount,
   allocationByKind,
-  bucketSeries,
   change,
-  limitByPeriod,
   sumSeriesByDate,
   todayISO,
   KIND_LABELS,
-  PERIOD_LABELS,
-  type Period,
 } from '../lib/calc'
 import { formatPercent, formatTRY } from '../lib/currency'
 import {
@@ -37,31 +34,22 @@ import {
   DEFAULT_TAX_RATE,
 } from '../lib/holdings'
 
+/** Fon - Hisse grafiğinde başta görünen kalem sayısı */
+const FUNDS_SHOWN = 10
+
 export default function Dashboard() {
   const { profiles, user } = useAuth()
   const [scope, setScope] = useState<string>(user?.id ?? '')
-  const [period, setPeriod] = useState<Period>('aylik')
+  /** Pozisyon grafiğinde vergi sonrası çizgisi — varsayılan gizli */
+  const [showNetLine, setShowNetLine] = useState(false)
+  /** Fon-hisse grafiğinde ilk 10'dan fazlasını göster */
+  const [showAllFunds, setShowAllFunds] = useState(false)
 
   const effectiveScope = scope || user?.id || ''
   const isTotal = effectiveScope === 'toplam'
 
-  const { rows, loading, error } = useNetWorth(isTotal ? null : effectiveScope)
+  const { rows, error } = useNetWorth(isTotal ? null : effectiveScope)
   const { snapshots } = useSnapshots(isTotal ? null : effectiveScope)
-
-  const series = useMemo(() => {
-    const base = isTotal ? sumSeriesByDate(rows) : rows
-    return bucketSeries(limitByPeriod(base, period), period)
-  }, [rows, period, isTotal])
-
-  const chartData: ChartPoint[] = useMemo(
-    () =>
-      series.map((r) => ({
-        date: r.snapshot_date,
-        net: r.net_worth_try,
-        varlik: r.total_assets_try,
-      })),
-    [series]
-  )
 
   // Son ve bir önceki snapshot (bucketlanmamış ham seri üzerinden)
   const raw = useMemo(() => (isTotal ? sumSeriesByDate(rows) : rows), [rows, isTotal])
@@ -95,7 +83,7 @@ export default function Dashboard() {
   const { rows: trades } = useTable<TradeWithRefs>('trades', {
     userId: isTotal ? null : effectiveScope,
     orderBy: 'trade_date',
-    select: '*, accounts:account_id (id, name, type), assets:asset_id (id, symbol, name, kind)',
+    select: TRADE_SELECT,
   })
 
   const tradedAssetIds = useMemo(
@@ -151,6 +139,18 @@ export default function Dashboard() {
         .sort((a, b) => b.value - a.value),
     [holdings]
   )
+  const fundProfitTotal = useMemo(
+    () => fundProfit.reduce((s, f) => s + f.value, 0),
+    [fundProfit]
+  )
+  /** Grafikte önce mutlak değeri en büyük ilk 10 kalem; sıralama kâr düzeninde kalır */
+  const fundProfitShown = useMemo(() => {
+    if (showAllFunds || fundProfit.length <= FUNDS_SHOWN) return fundProfit
+    return [...fundProfit]
+      .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+      .slice(0, FUNDS_SHOWN)
+      .sort((a, b) => b.value - a.value)
+  }, [fundProfit, showAllFunds])
 
   const netChange = change(last?.net_worth_try ?? 0, prev?.net_worth_try)
   const { ipos, entries, totalWaiting } = useIpos(isTotal ? null : effectiveScope)
@@ -263,19 +263,6 @@ export default function Dashboard() {
           value={effectiveScope}
           onChange={setScope}
         />
-        <div className="ml-auto inline-flex rounded-lg border border-border bg-surface p-1 gap-1">
-          {(Object.keys(PERIOD_LABELS) as Period[]).map((p) => (
-            <button
-              key={p}
-              onClick={() => setPeriod(p)}
-              className={`px-3 py-1.5 rounded-md text-sm ${
-                period === p ? 'bg-surface2 text-ink' : 'text-muted hover:text-ink'
-              }`}
-            >
-              {PERIOD_LABELS[p]}
-            </button>
-          ))}
-        </div>
       </div>
 
       {error && <ErrorBox message={error} />}
@@ -420,47 +407,75 @@ export default function Dashboard() {
         </Card>
       )}
 
-      <Card title="Net Değer Zaman Serisi">
-        {loading ? <Spinner /> : (
-          <NetWorthChart
-            data={chartData}
-            series={[
-              { key: 'net', label: 'Net Değer', color: '#4f8cff' },
-              { key: 'varlik', label: 'Toplam Varlık', color: '#22c55e' },
-            ]}
-          />
-        )}
-      </Card>
-
       {tradeSeries.length > 0 && (
-        <Card title="Pozisyon Değeri (alım / satım)">
+        <Card
+          title="Pozisyon Değeri (alım / satım)"
+          actions={
+            <button
+              type="button"
+              className="btn-ghost text-xs"
+              onClick={() => setShowNetLine((v) => !v)}
+            >
+              {showNetLine ? 'Vergi sonrasını gizle' : 'Vergi sonrasını göster'}
+            </button>
+          }
+        >
           <NetWorthChart
             data={tradeSeries.map((p) => ({
               date: p.date,
               deger: p.value,
               vergiSonrasi: p.netValue,
-              maliyet: p.cost,
             }))}
-            series={[
-              { key: 'deger', label: 'Değer', color: '#22c55e' },
-              { key: 'vergiSonrasi', label: 'Vergi sonrası', color: '#f59e0b' },
-              { key: 'maliyet', label: 'Maliyet', color: '#94a3b8' },
-            ]}
+            series={
+              showNetLine
+                ? [
+                    { key: 'deger', label: 'Değer', color: '#22c55e' },
+                    { key: 'vergiSonrasi', label: 'Vergi sonrası', color: '#f59e0b' },
+                  ]
+                : [{ key: 'deger', label: 'Değer', color: '#22c55e' }]
+            }
           />
-          <p className="mt-2 text-xs text-muted">
-            Turuncu çizgi, o gün satılsaydı %{(DEFAULT_TAX_RATE * 100).toFixed(1).replace('.', ',')}{' '}
-            stopaj sonrası cebe kalacak tutarı gösterir. Noktalar işlem tarihlerinden geçer; ara
-            günler için geçmiş fiyat tutulmuyor.
-          </p>
+          {showNetLine && (
+            <p className="mt-2 text-xs text-muted">
+              Turuncu çizgi, o gün satılsaydı fonlardan %{(DEFAULT_TAX_RATE * 100).toFixed(1).replace('.', ',')}{' '}
+              stopaj kesildikten sonra cebe kalacak tutarı gösterir — hisselerden stopaj kesilmez.
+              Noktalar işlem tarihlerinden geçer; ara günler için geçmiş fiyat tutulmuyor.
+            </p>
+          )}
         </Card>
       )}
 
       {fundProfit.length > 0 && (
-        <Card title="Fon Bazlı Kâr / Zarar">
-          <AccountBar data={fundProfit} />
-          <p className="mt-2 text-xs text-muted">
-            Her fonun gerçekleşen (satılmış) ve açık kârı toplanır, vergi düşülür.
-          </p>
+        <Card
+          title="Fon - Hisse Kâr / Zarar"
+          actions={
+            <span
+              className={`num text-sm font-semibold ${
+                fundProfitTotal >= 0 ? 'text-pos' : 'text-neg'
+              }`}
+            >
+              Toplam {formatTRY(fundProfitTotal)}
+            </span>
+          }
+        >
+          <AccountBar data={fundProfitShown} />
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-muted">
+              Her kalemin gerçekleşen ve açık kârı toplanır; fonlarda stopaj düşülür, hisselerde
+              vergi yoktur.
+            </p>
+            {fundProfit.length > FUNDS_SHOWN && (
+              <button
+                type="button"
+                className="btn-ghost text-xs"
+                onClick={() => setShowAllFunds((v) => !v)}
+              >
+                {showAllFunds
+                  ? 'Daha az göster'
+                  : `Daha fazla göster (${fundProfit.length - FUNDS_SHOWN})`}
+              </button>
+            )}
+          </div>
         </Card>
       )}
 

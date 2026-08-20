@@ -5,7 +5,7 @@ import { useAuth } from '../hooks/useAuth'
 import { useAccounts } from '../hooks/useAccounts'
 import { useAssets } from '../hooks/useAssets'
 import { usePrices } from '../hooks/usePrices'
-import { useTable } from '../hooks/useTable'
+import { useTrades } from '../hooks/useTrades'
 import StatCard from '../components/StatCard'
 import { Badge, Card, Empty, ErrorBox, Modal, PageHeader, Spinner } from '../components/ui'
 import { CURRENCIES, formatNumber, formatPercent, formatTRY, parseAmount } from '../lib/currency'
@@ -15,8 +15,8 @@ import type { AssetKind, Currency, TradeSide, TradeWithRefs } from '../types/db'
 
 const KINDS: AssetKind[] = ['hisse', 'fon', 'doviz', 'altin', 'mevduat', 'kripto', 'diger']
 
-const TRADE_SELECT =
-  '*, accounts:account_id (id, name, type), assets:asset_id (id, symbol, name, kind)'
+/** Hesap filtresinde "hesap seçilmemiş" kayıtları için özel değer */
+const NO_ACCOUNT = '__none__'
 
 /** Adet × birim fiyat — küsurat farkı olmadığı sürece tutar buradan gelir */
 const product = (qty: string, unit: string) => {
@@ -34,16 +34,13 @@ export default function Trades() {
   const { assets, ensureAsset } = useAssets()
   const { bySymbol, latestDate } = usePrices()
 
-  const trades = useTable<TradeWithRefs>('trades', {
-    userId: effectiveScope,
-    orderBy: 'trade_date',
-    ascending: false,
-    select: TRADE_SELECT,
-  })
+  const trades = useTrades(effectiveScope)
 
   const [modal, setModal] = useState<TradeWithRefs | 'new' | null>(null)
   /** Pozisyonları hesap bazında ayır — aynı kâğıt iki kurumda ayrı satır olur */
   const [byAccount, setByAccount] = useState(false)
+  /** Boş = tüm hesaplar; NO_ACCOUNT = hesabı seçilmemiş kayıtlar */
+  const [accountFilter, setAccountFilter] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -55,9 +52,20 @@ export default function Trades() {
   const [orderAmount, setOrderAmount] = useState('')
   const [currency, setCurrency] = useState<Currency>('TRY')
 
+  const regularAccounts = useMemo(() => accounts.filter((a) => !a.is_ipo), [accounts])
+  const ipoAccounts = useMemo(() => accounts.filter((a) => a.is_ipo), [accounts])
+  const hasOrphanTrades = useMemo(() => trades.rows.some((t) => !t.account_id), [trades.rows])
+
+  /** Hesap filtresi pozisyonlara, özetlere ve işlem geçmişine birlikte uygulanır */
+  const filteredTrades = useMemo(() => {
+    if (!accountFilter) return trades.rows
+    if (accountFilter === NO_ACCOUNT) return trades.rows.filter((t) => !t.account_id)
+    return trades.rows.filter((t) => t.account_id === accountFilter)
+  }, [trades.rows, accountFilter])
+
   const holdings = useMemo(
-    () => computeHoldings(trades.rows, bySymbol, { byAccount }),
-    [trades.rows, bySymbol, byAccount]
+    () => computeHoldings(filteredTrades, bySymbol, { byAccount }),
+    [filteredTrades, bySymbol, byAccount]
   )
   const totals = useMemo(() => holdingTotals(holdings), [holdings])
 
@@ -179,6 +187,42 @@ export default function Trades() {
       />
 
       {trades.error && <ErrorBox message={trades.error} />}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="text-sm text-muted">Hesap:</label>
+        <select
+          className="min-w-[220px]"
+          value={accountFilter}
+          onChange={(e) => setAccountFilter(e.target.value)}
+        >
+          <option value="">Tüm hesaplar</option>
+          {regularAccounts.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+          {ipoAccounts.length > 0 && (
+            <optgroup label="Halka arz hesapları">
+              {ipoAccounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {hasOrphanTrades && <option value={NO_ACCOUNT}>Hesap seçilmemiş</option>}
+        </select>
+        {accountFilter && (
+          <button className="btn-ghost text-xs" onClick={() => setAccountFilter('')}>
+            ✕ Filtreyi kaldır
+          </button>
+        )}
+        {accountFilter && (
+          <span className="text-xs text-muted">
+            Özetler ve geçmiş yalnızca bu hesabın işlemlerini gösteriyor.
+          </span>
+        )}
+      </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <StatCard title="Toplam maliyet" value={totals.costBasis} />
@@ -359,8 +403,8 @@ export default function Trades() {
       <Card title="İşlem geçmişi" className="p-0 overflow-x-auto">
         {trades.loading ? (
           <Spinner />
-        ) : trades.rows.length === 0 ? (
-          <Empty>Kayıt yok.</Empty>
+        ) : filteredTrades.length === 0 ? (
+          <Empty>{accountFilter ? 'Bu hesapta kayıt yok.' : 'Kayıt yok.'}</Empty>
         ) : (
           <table className="w-full min-w-[880px]">
             <thead>
@@ -376,7 +420,7 @@ export default function Trades() {
               </tr>
             </thead>
             <tbody>
-              {trades.rows.map((t) => (
+              {filteredTrades.map((t) => (
                 <tr key={t.id} className="hover:bg-surface2/50">
                   <td className="td whitespace-nowrap">
                     {format(parseISO(t.trade_date), 'd MMM yyyy', { locale: tr })}
@@ -484,13 +528,28 @@ export default function Trades() {
 
           <div>
             <label className="label">Hesap</label>
-            <select name="account_id" className="w-full" defaultValue={editing?.account_id ?? ''}>
+            <select
+              name="account_id"
+              className="w-full"
+              defaultValue={
+                editing?.account_id ?? (accountFilter !== NO_ACCOUNT ? accountFilter : '')
+              }
+            >
               <option value="">Hesap seç…</option>
-              {accounts.map((a) => (
+              {regularAccounts.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.name}
                 </option>
               ))}
+              {ipoAccounts.length > 0 && (
+                <optgroup label="Halka arz hesapları">
+                  {ipoAccounts.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </div>
 
