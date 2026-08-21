@@ -280,6 +280,41 @@ export interface AccountBalance {
 }
 
 // --------------------------------------------------------------------
+// halkarz.com arz takvimi önbelleği — fetch-halkarz Edge Function yazar
+// --------------------------------------------------------------------
+export interface IpoFeedDetail {
+  tarih: string | null
+  fiyat: string | null
+  dagitim: string | null
+  pay: string | null
+  araci_kurum: string | null
+  konsorsiyum: string[] | null
+  bist_kodu: string | null
+  pazar: string | null
+  ilk_islem: string | null
+  /** Dağıtım sonuçları tablosu — ham metin satırları */
+  sonuclar: string[][] | null
+  ozet: { baslik: string; icerik: string }[] | null
+  son_guncelleme: string | null
+}
+
+export interface IpoFeedItem {
+  slug: string
+  name: string
+  bist_code: string | null
+  badge: 'yeni' | 'gong' | 'ertelendi' | null
+  is_draft: boolean
+  date_text: string | null
+  price_text: string | null
+  url: string
+  image_url: string | null
+  sort_order: number
+  detail: IpoFeedDetail | null
+  detail_fetched_at: string | null
+  updated_at: string
+}
+
+// --------------------------------------------------------------------
 // Serbest hatırlatıcılar — tarihi gelince e-posta gönderilir
 // --------------------------------------------------------------------
 export type RepeatMode = 'once' | 'monthly'

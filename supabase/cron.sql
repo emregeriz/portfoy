@@ -108,3 +108,25 @@ select cron.schedule(
   );
   $cron$
 );
+
+-- ---------------------------------------------------------------- 5
+-- halkarz.com arz takvimi — günde 3 kez (09:30 / 13:30 / 19:30 TR)
+--
+-- Önce supabase/halkarz.sql çalıştırılmış ve fetch-halkarz fonksiyonu
+-- deploy edilmiş olmalı. Arayüzdeki "Yenile" düğmesi aynı işi elle yapar.
+select cron.schedule(
+  'fetch-halkarz-daily',
+  '30 6,10,16 * * *',
+  $cron$
+  select net.http_post(
+    url     := 'https://wihfycgxdvazhgnnprhz.supabase.co/functions/v1/fetch-halkarz',
+    headers := jsonb_build_object(
+      'Content-Type',  'application/json',
+      'Authorization', 'Bearer ' || (
+        select decrypted_secret from vault.decrypted_secrets where name = 'service_role_key'
+      )
+    ),
+    body    := '{}'::jsonb
+  );
+  $cron$
+);

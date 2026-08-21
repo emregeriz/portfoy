@@ -7,10 +7,11 @@ import { useIpos, ipoStats } from '../hooks/useIpos'
 import { usePrices } from '../hooks/usePrices'
 import StatCard from '../components/StatCard'
 import NumberInput from '../components/NumberInput'
+import IpoFeed from '../components/IpoFeed'
 import { Badge, Card, Empty, ErrorBox, Modal, PageHeader, Spinner } from '../components/ui'
 import { formatNumber, formatPercent, formatTRY, parseAmount, parseTRInput, toTRInput } from '../lib/currency'
 import { todayISO } from '../lib/calc'
-import type { IpoEntry, IpoRow, IpoState } from '../types/db'
+import type { IpoEntry, IpoFeedItem, IpoRow, IpoState } from '../types/db'
 
 const STATES: { value: IpoState; label: string; tone: string }[] = [
   { value: 'talep_verildi', label: 'Talep Verildi', tone: 'warn' },
@@ -22,7 +23,7 @@ const STATES: { value: IpoState; label: string; tone: string }[] = [
 const stateMeta = (s: IpoState) => STATES.find((x) => x.value === s) ?? STATES[0]
 
 type ModalState =
-  | { type: 'ipo'; ipo: IpoRow | null }
+  | { type: 'ipo'; ipo: IpoRow | null; prefill?: { name: string; bist_code: string | null } }
   | { type: 'allocate'; ipo: IpoRow }
   | { type: 'trading'; ipo: IpoRow }
   | { type: 'sale'; ipo: IpoRow }
@@ -45,6 +46,8 @@ export default function IpoPage() {
 
   /** Sol listedeki seçili arz — detay paneli bunu gösterir */
   const [selected, setSelected] = useState<string | null>(null)
+  /** takip = kendi arzların, takvim = halkarz.com arz takvimi */
+  const [tab, setTab] = useState<'takip' | 'takvim'>('takip')
   /** Hesap Bazlı Kâr tablosunun kapsamı — boş = tüm arzlar, dolu = tek arz id */
   const [profitScope, setProfitScope] = useState('')
   const [modal, setModal] = useState<ModalState>(null)
@@ -180,6 +183,19 @@ export default function IpoPage() {
     setFormLotPrice(ipo?.lot_price != null ? String(ipo.lot_price) : '')
     setFormLot(ipo?.default_lot != null ? String(ipo.default_lot) : '')
     setModal({ type: 'ipo', ipo })
+  }
+
+  /** Takvimden gelen arzı "Yeni Arz" formuna önceden doldurur */
+  const trackFromFeed = (f: IpoFeedItem) => {
+    setFormError(null)
+    setPickedAccounts(new Set(ipoAccounts.map((a) => a.id)))
+    setFormLotPrice((f.detail?.fiyat ?? f.price_text ?? '').replace(/[^\d.,]/g, ''))
+    setFormLot('')
+    setModal({
+      type: 'ipo',
+      ipo: null,
+      prefill: { name: f.name, bist_code: f.bist_code ?? f.detail?.bist_kodu ?? null },
+    })
   }
 
   const submitIpo = (e: React.FormEvent<HTMLFormElement>) => {
@@ -332,6 +348,30 @@ export default function IpoPage() {
 
       {error && <ErrorBox message={error} />}
 
+      <div className="inline-flex rounded-lg border border-border bg-surface p-1 gap-1">
+        {(
+          [
+            ['takip', 'Arzlarım'],
+            ['takvim', 'Arz Takvimi'],
+          ] as const
+        ).map(([v, label]) => (
+          <button
+            key={v}
+            type="button"
+            onClick={() => setTab(v)}
+            className={`px-3 py-1.5 rounded-md text-sm ${
+              tab === v ? 'bg-surface2 text-ink' : 'text-muted hover:text-ink'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'takvim' && <IpoFeed onTrack={trackFromFeed} />}
+
+      {tab === 'takip' && (
+      <>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           title="Halka Arz İadesi"
@@ -950,6 +990,9 @@ export default function IpoPage() {
         </Card>
       )}
 
+      </>
+      )}
+
       {/* ------------------------------------------------------------ modallar */}
       <Modal
         open={modal?.type === 'ipo'}
@@ -962,7 +1005,13 @@ export default function IpoPage() {
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="sm:col-span-2">
                 <label className="label">Arz adı</label>
-                <input name="name" className="w-full" defaultValue={modal.ipo?.name ?? ''} autoFocus required />
+                <input
+                  name="name"
+                  className="w-full"
+                  defaultValue={modal.ipo?.name ?? modal.prefill?.name ?? ''}
+                  autoFocus
+                  required
+                />
               </div>
               <div>
                 <label className="label">BIST kodu</label>
@@ -970,7 +1019,7 @@ export default function IpoPage() {
                   name="bist_code"
                   className="w-full uppercase"
                   placeholder="ABCDE"
-                  defaultValue={modal.ipo?.bist_code ?? ''}
+                  defaultValue={modal.ipo?.bist_code ?? modal.prefill?.bist_code ?? ''}
                 />
               </div>
               <div>
