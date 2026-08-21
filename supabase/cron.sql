@@ -130,3 +130,24 @@ select cron.schedule(
   );
   $cron$
 );
+
+-- ---------------------------------------------------------------- 6
+-- Hisse fiyatları seans boyunca dakikada bir — hafta içi 10:00–18:59 TR
+-- (07–15 UTC). {"only":"hisse"} yalnızca BIST hisselerini çeker; fon,
+-- döviz, altın ve kripto kaynaklarına dokunmaz, Fonoloji kotası yanmaz.
+select cron.schedule(
+  'fetch-prices-stocks-live',
+  '* 7-15 * * 1-5',
+  $cron$
+  select net.http_post(
+    url     := 'https://wihfycgxdvazhgnnprhz.supabase.co/functions/v1/fetch-prices',
+    headers := jsonb_build_object(
+      'Content-Type',  'application/json',
+      'Authorization', 'Bearer ' || (
+        select decrypted_secret from vault.decrypted_secrets where name = 'service_role_key'
+      )
+    ),
+    body    := '{"only":"hisse"}'::jsonb
+  );
+  $cron$
+);

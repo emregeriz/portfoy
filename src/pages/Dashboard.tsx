@@ -479,7 +479,10 @@ export default function Dashboard() {
                             <span className="ml-1 text-xs text-muted font-normal">maliyet</span>
                           )}
                         </td>
-                        <td className="td text-right num text-muted">{formatTRY(h.costBasis)}</td>
+                        <td className="td text-right text-muted">
+                          <div className="num">{formatTRY(h.costBasis)}</div>
+                          <div className="text-xs num">ort. {formatNumber(h.avgCost, 4)}</div>
+                        </td>
                         <td className="td text-right num">
                           {h.unrealized != null ? (
                             <span className={h.unrealized >= 0 ? 'text-pos' : 'text-neg'}>

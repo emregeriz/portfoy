@@ -8,6 +8,7 @@ import { usePrices } from '../hooks/usePrices'
 import { useTrades } from '../hooks/useTrades'
 import { useIpos } from '../hooks/useIpos'
 import { ipoVirtualTrades, isIpoTrade } from '../lib/ipoTrades'
+import { supabase } from '../lib/supabase'
 import StatCard from '../components/StatCard'
 import { Badge, Card, Empty, ErrorBox, Modal, PageHeader, Spinner } from '../components/ui'
 import { CURRENCIES, formatNumber, formatPercent, formatTRY, parseAmount } from '../lib/currency'
@@ -180,6 +181,43 @@ export default function Trades() {
     return { shares, refund: order - shares * price }
   })()
 
+  /**
+   * Halka arz hesabındaki işlem hesabın nakit defterine de işler: satış
+   * parayı hesaba yazar (+), alış nakitten düşer (−). Hareket trade'e
+   * bağlıdır; işlem silinince veritabanı bağı sayesinde birlikte silinir.
+   * Kendi hesaplarının (Midas vb.) nakiti Nakit sayfasından elle yönetilir.
+   */
+  const syncTradeCash = async (
+    tradeId: string,
+    v: { account_id: string | null; side: TradeSide; trade_date: string; amount: number; fx_rate: number },
+    symbol: string
+  ) => {
+    const acc = accounts.find((a) => a.id === v.account_id)
+    if (!acc?.is_ipo) {
+      // Hesap arz hesabı değil(se) ya da değiştirildiyse eski hareket kalmasın
+      await supabase.from('account_ledger').delete().eq('trade_id', tradeId)
+      return
+    }
+    const amountTry = v.amount * (v.fx_rate || 1)
+    const { error } = await supabase.from('account_ledger').upsert(
+      {
+        user_id: user!.id,
+        account_id: acc.id,
+        trade_id: tradeId,
+        kind: v.side === 'satis' ? 'satis' : 'alim',
+        amount: v.side === 'satis' ? amountTry : -amountTry,
+        date: v.trade_date,
+        note: `${symbol} ${v.side === 'satis' ? 'satışı' : 'alışı'}`,
+      },
+      { onConflict: 'trade_id' }
+    )
+    if (error) {
+      throw new Error(
+        `İşlem kaydedildi ama nakit hareketi yazılamadı — supabase/trade-cash.sql çalıştırıldı mı? (${error.message})`
+      )
+    }
+  }
+
   const submit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     if (!user) return
@@ -210,8 +248,15 @@ export default function Trades() {
         fx_rate: parseAmount(String(fd.get('fx_rate') ?? '1')) || 1,
         note: String(fd.get('note') ?? '').trim() || null,
       }
-      if (modal === 'new') await trades.insert(values)
-      else await trades.update((modal as TradeWithRefs).id, values)
+      let tradeId: string | null
+      if (modal === 'new') {
+        const created = await trades.insert(values)
+        tradeId = created?.id ?? null
+      } else {
+        tradeId = (modal as TradeWithRefs).id
+        await trades.update(tradeId, values)
+      }
+      if (tradeId) await syncTradeCash(tradeId, values, symbol)
       setModal(null)
       setFormError(null)
     } catch (err) {

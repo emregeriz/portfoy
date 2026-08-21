@@ -132,9 +132,10 @@ async function coingecko(ids: string[]): Promise<Record<string, number>> {
  */
 async function yahoo(
   symbol: string,
+  range = '1mo',
 ): Promise<{ price: number; currency: string; history: { date: string; price: number }[] } | null> {
   const url = 'https://query1.finance.yahoo.com/v8/finance/chart/' +
-    encodeURIComponent(symbol) + '?interval=1d&range=1mo'
+    encodeURIComponent(symbol) + '?interval=1d&range=' + range
   const res = await tryFetch(url, { headers: { 'User-Agent': UA } })
   if (!res.ok) return null
   const j = await res.json()
@@ -210,10 +211,14 @@ Deno.serve(async (req: Request) => {
 
   // { backfill: true } → geçmişi olsun olmasın bütün fonların serisi çekilir
   // { backfillPeriod: '3m' } → çekilecek aralık (1w | 1m | 3m | 1y | ytd)
+  // { only: "hisse" }  → yalnızca BIST hisseleri (seans içi sık çekim).
+  //   Fon/döviz/altın/kripto kaynaklarına hiç gidilmez — Fonoloji kotası yanmaz.
   const body = (await req.json().catch(() => ({}))) as {
     backfill?: boolean
     backfillPeriod?: string
+    only?: string
   }
+  const onlyStocks = body.only === 'hisse'
 
   const log: string[] = []
   const errors: string[] = []
@@ -234,7 +239,7 @@ Deno.serve(async (req: Request) => {
 
   // --- döviz ---------------------------------------------------------
   let fx: Record<string, number> = {}
-  try {
+  if (!onlyStocks) try {
     const r = await tcmb()
     fx = r.rates
     for (const c of ['USD', 'EUR', 'GBP', 'CHF']) {
@@ -250,7 +255,7 @@ Deno.serve(async (req: Request) => {
   }
 
   // --- altın & gümüş --------------------------------------------------
-  try {
+  if (!onlyStocks) try {
     const r = await truncgil()
     if (r.values.GRA) fxRows.push({ date: r.date, currency: 'XAU', rate_try: r.values.GRA })
     let n = 0
@@ -267,7 +272,7 @@ Deno.serve(async (req: Request) => {
   }
 
   // --- kripto ---------------------------------------------------------
-  try {
+  if (!onlyStocks) try {
     const cryptos = assets.filter((x) => x.kind === 'kripto')
     const idOf = (a: Asset): string => a.price_ref?.trim() || CRYPTO_MAP[ref(a)] || ref(a).toLowerCase()
     const prices = await coingecko([...new Set(cryptos.map(idOf))])
@@ -290,19 +295,25 @@ Deno.serve(async (req: Request) => {
     let n = 0
     for (const a of stocks) {
       const sym = a.price_ref?.trim() || a.symbol.toUpperCase() + '.IS'
-      const q = await yahoo(sym)
+      // Sık çekimde hafif istek: tek günlük seri yeter, geçmiş yazılmaz
+      const q = await yahoo(sym, onlyStocks ? '1d' : '1mo')
       if (q) {
-        const rate = q.currency === 'TRY' ? 1 : (fx[q.currency] ?? 1)
+        // Sık çekimde kur tablosu çekilmediği için TL dışı sembol atlanır —
+        // yanlış kurla fiyat yazmaktansa son bilinen fiyat kalsın
+        const rate = q.currency === 'TRY' ? 1 : onlyStocks ? null : (fx[q.currency] ?? 1)
+        if (rate == null) continue
         priceRows.push({ asset_id: a.id, date: today(), price: q.price * rate, currency: 'TRY', source: 'yahoo' })
-        // Geçmiş günler; bugünün satırı zaten yazıldığı için tekilleştirmede elenir
-        for (const h of q.history) {
-          priceRows.push({
-            asset_id: a.id,
-            date: h.date,
-            price: h.price * rate,
-            currency: 'TRY',
-            source: 'yahoo-history',
-          })
+        if (!onlyStocks) {
+          // Geçmiş günler; bugünün satırı zaten yazıldığı için tekilleştirmede elenir
+          for (const h of q.history) {
+            priceRows.push({
+              asset_id: a.id,
+              date: h.date,
+              price: h.price * rate,
+              currency: 'TRY',
+              source: 'yahoo-history',
+            })
+          }
         }
         n++
       }
@@ -313,7 +324,7 @@ Deno.serve(async (req: Request) => {
   }
 
   // --- fonlar ----------------------------------------------------------
-  try {
+  if (!onlyStocks) try {
     const funds = assets.filter((x) => x.kind === 'fon')
     if (funds.length && !fonKey) throw new Error('FONOLOJI_API_KEY tanımlı değil')
     let n = 0

@@ -34,9 +34,11 @@ export function useTable<T extends { id: string }>(table: string, opts: Options 
 
   const insert = useCallback(
     async (values: Record<string, unknown>) => {
-      const { error } = await supabase.from(table).insert(values)
+      const { data, error } = await supabase.from(table).insert(values).select()
       if (error) throw new Error(error.message)
       await load()
+      // Eklenen satır — çağıran taraf id'ye ihtiyaç duyabilir (ör. bağlı kayıt)
+      return (data?.[0] ?? null) as T | null
     },
     [table, load]
   )

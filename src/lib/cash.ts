@@ -9,10 +9,11 @@ export const LEDGER_LABELS: Record<LedgerKind, string> = {
   transfer: 'Aktarım',
   nema: 'Nema',
   iade: 'Arz iadesi',
-  satis: 'Arz satışı',
+  satis: 'Satış geliri',
   cekim: 'Çekim',
   borc: 'Borç verme',
   tahsil: 'Borç tahsilatı',
+  alim: 'Hisse/fon alışı',
   diger: 'Diğer',
 }
 
@@ -26,6 +27,7 @@ export const LEDGER_TONES: Record<LedgerKind, string> = {
   cekim: 'neg',
   borc: 'warn',
   tahsil: 'pos',
+  alim: 'neg',
   diger: 'muted',
 }
 

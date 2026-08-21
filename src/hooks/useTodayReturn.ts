@@ -117,7 +117,10 @@ export function useTodayReturn(userId?: string | null): TodayReturnData {
           .eq('user_id', userId)
           .eq('kind', 'nema')
           .eq('date', today),
-        supabase.from('trades').select('asset_id, side, quantity').eq('user_id', userId),
+        supabase
+          .from('trades')
+          .select('asset_id, side, quantity, unit_price, amount_try, trade_date')
+          .eq('user_id', userId),
         supabase
           .from('snapshots')
           .select('id')
@@ -142,16 +145,47 @@ export function useTodayReturn(userId?: string | null): TodayReturnData {
       )
 
       // ---------------------------------------------- fon / hisse adetleri
-      const portfolio = new Map<string, number>()
-      for (const t of (tradeRes.data ?? []) as {
+      const tradeRows = (tradeRes.data ?? []) as {
         asset_id: string | null
         side: string
         quantity: number
-      }[]) {
+        unit_price: number
+        amount_try: number | null
+        trade_date: string
+      }[]
+      const portfolio = new Map<string, number>()
+      for (const t of tradeRows) {
         if (!t.asset_id) continue
         const q = Number(t.quantity)
         if (!Number.isFinite(q)) continue
         portfolio.set(t.asset_id, (portfolio.get(t.asset_id) ?? 0) + (t.side === 'alis' ? q : -q))
+      }
+
+      /**
+       * Bugün yapılan alış/satışlar. Gün içinde alınan pay dünkü kapanıştan
+       * değil, kendi alış fiyatından ölçülür — yoksa yeni alım "hazır kâr"
+       * gibi görünür. Satılan pay da satış fiyatına kadar olan hareketiyle
+       * sayılır.
+       */
+      const todayFlows = new Map<
+        string,
+        { buyQty: number; buyCost: number; sellQty: number; sellProceeds: number }
+      >()
+      for (const t of tradeRows) {
+        if (!t.asset_id || t.trade_date !== today) continue
+        const q = Number(t.quantity)
+        const amt = Number(t.amount_try ?? q * Number(t.unit_price))
+        if (!Number.isFinite(q) || !Number.isFinite(amt)) continue
+        const f =
+          todayFlows.get(t.asset_id) ?? { buyQty: 0, buyCost: 0, sellQty: 0, sellProceeds: 0 }
+        if (t.side === 'alis') {
+          f.buyQty += q
+          f.buyCost += amt
+        } else {
+          f.sellQty += q
+          f.sellProceeds += amt
+        }
+        todayFlows.set(t.asset_id, f)
       }
 
       if (snapRes.data?.id) {
@@ -283,17 +317,28 @@ export function useTodayReturn(userId?: string | null): TodayReturnData {
           unmeasured++
           continue
         }
+        const latestPrice = Number(latest.price)
+
+        // Bugünün alış/satışları düşülür: dünden beri tutulan pay dünkü
+        // kapanıştan, bugün alınan pay kendi alış fiyatından ölçülür.
+        const flows = item.source === 'portfoy' ? todayFlows.get(item.assetId) : undefined
+        const qtyPrev = Math.max(item.qty - (flows?.buyQty ?? 0) + (flows?.sellQty ?? 0), 0)
+
         // Önceki kapanış yoksa halka arz fiyatına düşülür: arzın ilk işlem
         // gününde kazancın tamamı o gün oluşur, para o zamana dek arz
-        // fiyatında bağlıydı. Fon/hisse tarafında böyle bir referans yok.
+        // fiyatında bağlıydı. Pozisyonun tamamı bugün alındıysa önceki
+        // kapanışa gerek yoktur — maliyet zaten bugünün alışlarından gelir.
         const firstDay = !prev
         const prevPrice = prev ? Number(prev.price) : (item.refPrice ?? null)
-        if (prevPrice == null || !(prevPrice > 0)) {
+        if ((prevPrice == null || !(prevPrice > 0)) && qtyPrev > 1e-9) {
           unmeasured++
           continue
         }
-        const diff = Number(latest.price) - prevPrice
-        const delta = diff * item.qty
+
+        // Bugünün kazancı = (şimdiki değer + bugünkü satış geliri)
+        //                 − (dünkü değer + bugünkü alış maliyeti)
+        const base = qtyPrev * (prevPrice ?? 0) + (flows?.buyCost ?? 0)
+        const delta = item.qty * latestPrice + (flows?.sellProceeds ?? 0) - base
         if (!Number.isFinite(delta)) {
           unmeasured++
           continue
@@ -305,7 +350,7 @@ export function useTodayReturn(userId?: string | null): TodayReturnData {
           movers.push({
             symbol: symbolOf.get(item.assetId) ?? '—',
             delta,
-            pct: (diff / prevPrice) * 100,
+            pct: base > 0 ? (delta / base) * 100 : null,
             source: item.source,
             date: latest.date,
             firstDay,

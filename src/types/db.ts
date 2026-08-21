@@ -192,7 +192,7 @@ export interface NetWorthRow {
 export type IpoState = 'talep_verildi' | 'dagitildi' | 'islemde' | 'satildi' | 'iptal'
 export type LedgerKind =
   | 'giris' | 'iade' | 'satis' | 'transfer' | 'cikis'
-  | 'cekim' | 'nema' | 'borc' | 'tahsil' | 'diger'
+  | 'cekim' | 'nema' | 'borc' | 'tahsil' | 'alim' | 'diger'
 
 export interface IpoRow {
   id: string
@@ -265,6 +265,8 @@ export interface LedgerRow {
   amount: number
   /** Borç verme / tahsilat hareketini alacak kaydına bağlar */
   receivable_id: string | null
+  /** Alım/satım kaydına bağlı nakit hareketi — işlem silinince birlikte gider */
+  trade_id: string | null
   date: string
   /** Aktarım çiftini eşleştirir — biri eksi biri artı */
   transfer_id: string | null
