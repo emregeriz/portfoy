@@ -3,6 +3,8 @@ import { useAuth } from '../hooks/useAuth'
 import { useAccounts } from '../hooks/useAccounts'
 import { usePrices } from '../hooks/usePrices'
 import { useTrades } from '../hooks/useTrades'
+import { useIpos } from '../hooks/useIpos'
+import { ipoVirtualTrades } from '../lib/ipoTrades'
 import { supabase } from '../lib/supabase'
 import { Badge, Card, Empty, ErrorBox, Modal, PageHeader, Spinner } from '../components/ui'
 import { CURRENCIES, formatNumber, formatPercent, formatTRY, parseAmount } from '../lib/currency'
@@ -232,6 +234,7 @@ export default function Accounts() {
   const { user } = useAuth()
   const { accounts, loading, error, reload } = useAccounts(user?.id)
   const { rows: tradeRows } = useTrades(user?.id)
+  const ipoData = useIpos(user?.id)
   const { bySymbol } = usePrices()
   const [modal, setModal] = useState<Account | 'new' | null>(null)
   const [cash, setCash] = useState<Record<string, number>>({})
@@ -278,10 +281,11 @@ export default function Accounts() {
     void run()
   }, [user?.id, accounts.length])
 
-  /** Hesap bazında hisse pozisyonları — alım/satım defterinden türetilir */
+  /** Hesap bazında hisse pozisyonları — alım/satım defteri + arzdan türeyen sanal işlemler */
   const holdingsMap = useMemo(() => {
+    const virtual = ipoVirtualTrades(ipoData.ipos, ipoData.entries, ipoData.accounts)
     const grouped = new Map<string, TradeWithRefs[]>()
-    for (const t of tradeRows) {
+    for (const t of [...tradeRows, ...virtual]) {
       if (!t.account_id) continue
       const list = grouped.get(t.account_id)
       if (list) list.push(t)
@@ -290,7 +294,7 @@ export default function Accounts() {
     const map = new Map<string, Holding[]>()
     for (const [id, list] of grouped) map.set(id, computeHoldings(list, bySymbol))
     return map
-  }, [tradeRows, bySymbol])
+  }, [tradeRows, bySymbol, ipoData.ipos, ipoData.entries, ipoData.accounts])
 
   const regular = useMemo(() => accounts.filter((a) => !a.is_ipo), [accounts])
   const ipoAccounts = useMemo(() => accounts.filter((a) => a.is_ipo), [accounts])

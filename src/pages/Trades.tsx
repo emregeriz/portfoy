@@ -6,6 +6,8 @@ import { useAccounts } from '../hooks/useAccounts'
 import { useAssets } from '../hooks/useAssets'
 import { usePrices } from '../hooks/usePrices'
 import { useTrades } from '../hooks/useTrades'
+import { useIpos } from '../hooks/useIpos'
+import { ipoVirtualTrades, isIpoTrade } from '../lib/ipoTrades'
 import StatCard from '../components/StatCard'
 import { Badge, Card, Empty, ErrorBox, Modal, PageHeader, Spinner } from '../components/ui'
 import { CURRENCIES, formatNumber, formatPercent, formatTRY, parseAmount } from '../lib/currency'
@@ -35,12 +37,20 @@ export default function Trades() {
   const { bySymbol, latestDate } = usePrices()
 
   const trades = useTrades(effectiveScope)
+  const ipoData = useIpos(effectiveScope)
 
   const [modal, setModal] = useState<TradeWithRefs | 'new' | null>(null)
   /** Pozisyonları hesap bazında ayır — aynı kâğıt iki kurumda ayrı satır olur */
   const [byAccount, setByAccount] = useState(false)
   /** Boş = tüm hesaplar; NO_ACCOUNT = hesabı seçilmemiş kayıtlar */
   const [accountFilter, setAccountFilter] = useState('')
+  /** Kapanan pozisyonlar varsayılan gizli — tablo açık pozisyonlara odaklanır */
+  const [showClosed, setShowClosed] = useState(false)
+  // İşlem geçmişi filtreleri
+  const [histQuery, setHistQuery] = useState('')
+  const [histSide, setHistSide] = useState<'' | TradeSide>('')
+  const [histFrom, setHistFrom] = useState('')
+  const [histTo, setHistTo] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -56,18 +66,65 @@ export default function Trades() {
   const ipoAccounts = useMemo(() => accounts.filter((a) => a.is_ipo), [accounts])
   const hasOrphanTrades = useMemo(() => trades.rows.some((t) => !t.account_id), [trades.rows])
 
+  /**
+   * Halka arz dağıtım/satışları sanal işlem olarak deftere katılır —
+   * kaynak Halka Arz modülü, burada salt okunur görünürler.
+   */
+  const virtualTrades = useMemo(
+    () => ipoVirtualTrades(ipoData.ipos, ipoData.entries, ipoData.accounts),
+    [ipoData.ipos, ipoData.entries, ipoData.accounts]
+  )
+  const allRows = useMemo(
+    () =>
+      [...trades.rows, ...virtualTrades].sort(
+        (a, b) =>
+          b.trade_date.localeCompare(a.trade_date) || b.created_at.localeCompare(a.created_at)
+      ),
+    [trades.rows, virtualTrades]
+  )
+
   /** Hesap filtresi pozisyonlara, özetlere ve işlem geçmişine birlikte uygulanır */
   const filteredTrades = useMemo(() => {
-    if (!accountFilter) return trades.rows
-    if (accountFilter === NO_ACCOUNT) return trades.rows.filter((t) => !t.account_id)
-    return trades.rows.filter((t) => t.account_id === accountFilter)
-  }, [trades.rows, accountFilter])
+    if (!accountFilter) return allRows
+    if (accountFilter === NO_ACCOUNT) return allRows.filter((t) => !t.account_id)
+    return allRows.filter((t) => t.account_id === accountFilter)
+  }, [allRows, accountFilter])
 
   const holdings = useMemo(
     () => computeHoldings(filteredTrades, bySymbol, { byAccount }),
     [filteredTrades, bySymbol, byAccount]
   )
   const totals = useMemo(() => holdingTotals(holdings), [holdings])
+  const openHoldings = useMemo(() => holdings.filter((h) => h.quantity > 0), [holdings])
+  const closedHoldings = useMemo(() => holdings.filter((h) => h.quantity <= 0), [holdings])
+
+  /** İşlem geçmişi — hesap filtresinin üstüne sembol/tür/tarih filtreleri biner */
+  const history = useMemo(() => {
+    const q = histQuery.trim().toLocaleUpperCase('tr')
+    return filteredTrades.filter((t) => {
+      if (histSide && t.side !== histSide) return false
+      if (histFrom && t.trade_date < histFrom) return false
+      if (histTo && t.trade_date > histTo) return false
+      if (q) {
+        const sym = (t.assets?.symbol ?? '').toLocaleUpperCase('tr')
+        const acc = (t.accounts?.name ?? '').toLocaleUpperCase('tr')
+        if (!sym.includes(q) && !acc.includes(q)) return false
+      }
+      return true
+    })
+  }, [filteredTrades, histQuery, histSide, histFrom, histTo])
+
+  const histTotals = useMemo(() => {
+    let buy = 0
+    let sell = 0
+    for (const t of history) {
+      if (t.side === 'alis') buy += Number(t.amount_try)
+      else sell += Number(t.amount_try)
+    }
+    return { buy, sell }
+  }, [history])
+
+  const histFiltered = Boolean(histQuery || histSide || histFrom || histTo)
 
   const openForm = (t: TradeWithRefs | 'new') => {
     setModal(t)
@@ -314,115 +371,213 @@ export default function Trades() {
         ) : holdings.length === 0 ? (
           <Empty>Henüz işlem yok. Sağ üstteki düğmeyle ilk alımını gir.</Empty>
         ) : (
-          <table className="w-full min-w-[1100px]">
+          <table className="w-full min-w-[820px]">
             <thead>
               <tr>
                 <th className="th">Sembol</th>
-                {byAccount && <th className="th">Hesap</th>}
-                <th className="th text-right">Adet</th>
-                <th className="th text-right">Ort. maliyet</th>
+                <th className="th text-right">Pozisyon</th>
                 <th className="th text-right">Maliyet</th>
-                <th className="th text-right">Güncel fiyat</th>
                 <th className="th text-right">Değer</th>
                 <th className="th text-right">Kâr / Zarar</th>
-                <th className="th text-right">Vergi</th>
-                <th className="th text-right">Vergi sonrası</th>
-                <th className="th">Hareket</th>
               </tr>
             </thead>
             <tbody>
-              {holdings.map((h) => (
+              {openHoldings.map((h) => (
                 <tr key={`${h.symbol}-${h.account ?? ''}`} className="hover:bg-surface2/50">
-                  <td className="td font-medium">
-                    {h.symbol}
-                    <span className="ml-2 text-xs text-muted">{h.kind}</span>
-                    {h.oversold && (
-                      <span className="ml-2">
-                        <Badge tone="warn">eksik alım</Badge>
+                  <td
+                    className="td"
+                    title={`${h.buyCount} alım${h.sellCount > 0 ? ` · ${h.sellCount} satış` : ''}`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">{h.symbol}</span>
+                      <span className="text-[11px] uppercase tracking-wide text-muted">
+                        {h.kind}
                       </span>
+                      {h.oversold && <Badge tone="warn">eksik alım</Badge>}
+                    </div>
+                    {byAccount && <div className="text-xs text-muted">{h.account}</div>}
+                  </td>
+                  <td className="td text-right">
+                    <div className="num">{formatNumber(h.quantity, 4)}</div>
+                    <div className="text-xs text-muted num">ort. {formatNumber(h.avgCost, 4)}</div>
+                  </td>
+                  <td className="td text-right num">{formatTRY(h.costBasis)}</td>
+                  <td className="td text-right">
+                    {h.value != null ? (
+                      <>
+                        <div className="num font-medium">{formatTRY(h.value)}</div>
+                        <div className="text-xs text-muted num">@ {formatNumber(h.price, 4)}</div>
+                      </>
+                    ) : (
+                      <span className="text-xs text-muted">fiyat yok</span>
                     )}
                   </td>
-                  {byAccount && <td className="td text-muted">{h.account}</td>}
-                  <td className="td text-right num">
-                    {h.quantity > 0 ? formatNumber(h.quantity, 4) : '—'}
-                  </td>
-                  <td className="td text-right num text-muted">
-                    {h.quantity > 0 ? formatNumber(h.avgCost, 6) : '—'}
-                  </td>
-                  <td className="td text-right num">
-                    {h.quantity > 0 ? formatTRY(h.costBasis) : '—'}
-                  </td>
-                  <td className="td text-right num text-muted">
-                    {h.price != null ? formatNumber(h.price, 6) : '—'}
-                  </td>
-                  <td className="td text-right num">{h.value != null ? formatTRY(h.value) : '—'}</td>
-                  <td className="td text-right num">
+                  <td className="td text-right">
                     {h.unrealized != null ? (
-                      <span className={h.unrealized >= 0 ? 'text-pos' : 'text-neg'}>
+                      <div
+                        className={`num font-medium ${h.unrealized >= 0 ? 'text-pos' : 'text-neg'}`}
+                      >
                         {formatTRY(h.unrealized)}
                         {h.unrealizedPct != null && (
-                          <span className="ml-1 text-xs">{formatPercent(h.unrealizedPct)}</span>
+                          <span className="ml-1 text-xs font-normal">
+                            {formatPercent(h.unrealizedPct)}
+                          </span>
                         )}
-                      </span>
+                      </div>
                     ) : (
-                      <span className="text-muted">fiyat yok</span>
+                      <span className="text-xs text-muted">—</span>
                     )}
                     {h.realized !== 0 && (
-                      <div className="text-xs text-muted">
-                        gerçekleşen {formatTRY(h.realized)}
+                      <div className="text-xs text-muted num">
+                        gerçekleşen {formatTRY(h.realizedNet)}
+                      </div>
+                    )}
+                    {h.potentialTax != null && h.potentialTax > 0 && (
+                      <div className="text-xs text-muted num">
+                        vergi −{formatTRY(h.potentialTax)} · net {formatTRY(h.netValue ?? 0)}
                       </div>
                     )}
                   </td>
-                  <td className="td text-right num text-muted">
-                    {h.potentialTax != null && h.potentialTax > 0 ? (
-                      <>
-                        −{formatTRY(h.potentialTax)}
-                        {h.realizedTax > 0 && (
-                          <div className="text-xs">ödenen {formatTRY(h.realizedTax)}</div>
-                        )}
-                      </>
-                    ) : h.realizedTax > 0 ? (
-                      <span className="text-xs">ödenen {formatTRY(h.realizedTax)}</span>
-                    ) : (
-                      '—'
-                    )}
-                  </td>
-                  <td className="td text-right num">
-                    {h.netValue != null ? formatTRY(h.netValue) : '—'}
-                  </td>
-                  <td className="td text-xs text-muted">
-                    {h.buyCount} alım{h.sellCount > 0 ? ` · ${h.sellCount} satış` : ''}
-                  </td>
                 </tr>
               ))}
+              {closedHoldings.length > 0 && (
+                <>
+                  <tr>
+                    <td colSpan={5} className="px-4 py-2 border-t border-border">
+                      <button
+                        type="button"
+                        className="text-xs text-muted hover:text-ink"
+                        onClick={() => setShowClosed((v) => !v)}
+                      >
+                        {showClosed ? '▾' : '▸'} Kapanan pozisyonlar ({closedHoldings.length})
+                      </button>
+                    </td>
+                  </tr>
+                  {showClosed &&
+                    closedHoldings.map((h) => (
+                      <tr
+                        key={`${h.symbol}-${h.account ?? ''}-kapali`}
+                        className="hover:bg-surface2/50 opacity-70"
+                      >
+                        <td className="td">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{h.symbol}</span>
+                            <span className="text-[11px] uppercase tracking-wide text-muted">
+                              {h.kind}
+                            </span>
+                          </div>
+                          {byAccount && <div className="text-xs text-muted">{h.account}</div>}
+                        </td>
+                        <td className="td text-right text-xs text-muted">
+                          kapandı · {h.buyCount} alım / {h.sellCount} satış
+                        </td>
+                        <td className="td text-right num text-muted">—</td>
+                        <td className="td text-right num text-muted">—</td>
+                        <td className="td text-right">
+                          <span
+                            className={`num ${h.realizedNet >= 0 ? 'text-pos' : 'text-neg'}`}
+                          >
+                            {formatTRY(h.realizedNet)}
+                          </span>
+                          {h.realizedTax > 0 && (
+                            <div className="text-xs text-muted num">
+                              vergi −{formatTRY(h.realizedTax)}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                </>
+              )}
             </tbody>
           </table>
         )}
       </Card>
 
       <Card title="İşlem geçmişi" className="p-0 overflow-x-auto">
+        <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-border">
+          <input
+            className="w-48 text-sm"
+            placeholder="Sembol ya da hesap ara"
+            value={histQuery}
+            onChange={(e) => setHistQuery(e.target.value)}
+          />
+          <div className="inline-flex rounded-lg border border-border bg-surface p-1 gap-1">
+            {(
+              [
+                ['', 'Tümü'],
+                ['alis', 'Alış'],
+                ['satis', 'Satış'],
+              ] as const
+            ).map(([v, label]) => (
+              <button
+                key={v}
+                type="button"
+                onClick={() => setHistSide(v as '' | TradeSide)}
+                className={`px-2.5 py-1 rounded-md text-xs ${
+                  histSide === v ? 'bg-surface2 text-ink' : 'text-muted hover:text-ink'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <input
+            type="date"
+            className="text-sm"
+            title="Başlangıç tarihi"
+            value={histFrom}
+            onChange={(e) => setHistFrom(e.target.value)}
+          />
+          <span className="text-xs text-muted">–</span>
+          <input
+            type="date"
+            className="text-sm"
+            title="Bitiş tarihi"
+            value={histTo}
+            onChange={(e) => setHistTo(e.target.value)}
+          />
+          {histFiltered && (
+            <button
+              type="button"
+              className="btn-ghost text-xs"
+              onClick={() => {
+                setHistQuery('')
+                setHistSide('')
+                setHistFrom('')
+                setHistTo('')
+              }}
+            >
+              ✕ Temizle
+            </button>
+          )}
+          <span className="ml-auto text-xs text-muted num">
+            {history.length} işlem · Alış {formatTRY(histTotals.buy)}
+            {histTotals.sell > 0 && <> · Satış {formatTRY(histTotals.sell)}</>}
+          </span>
+        </div>
         {trades.loading ? (
           <Spinner />
-        ) : filteredTrades.length === 0 ? (
-          <Empty>{accountFilter ? 'Bu hesapta kayıt yok.' : 'Kayıt yok.'}</Empty>
+        ) : history.length === 0 ? (
+          <Empty>
+            {histFiltered || accountFilter ? 'Filtreye uyan kayıt yok.' : 'Kayıt yok.'}
+          </Empty>
         ) : (
-          <table className="w-full min-w-[880px]">
+          <table className="w-full min-w-[720px]">
             <thead>
               <tr>
                 <th className="th">Tarih</th>
                 <th className="th">İşlem</th>
                 <th className="th">Sembol</th>
-                <th className="th">Hesap</th>
-                <th className="th text-right">Adet</th>
-                <th className="th text-right">Birim fiyat</th>
+                <th className="th text-right">Adet × Birim</th>
                 <th className="th text-right">Tutar</th>
                 <th className="th"></th>
               </tr>
             </thead>
             <tbody>
-              {filteredTrades.map((t) => (
+              {history.map((t) => (
                 <tr key={t.id} className="hover:bg-surface2/50">
-                  <td className="td whitespace-nowrap">
+                  <td className="td whitespace-nowrap text-muted">
                     {format(parseISO(t.trade_date), 'd MMM yyyy', { locale: tr })}
                   </td>
                   <td className="td">
@@ -430,15 +585,32 @@ export default function Trades() {
                       {t.side === 'alis' ? 'Alış' : 'Satış'}
                     </Badge>
                   </td>
-                  <td className="td font-medium">{t.assets?.symbol ?? '—'}</td>
-                  <td className="td text-muted">{t.accounts?.name ?? '—'}</td>
-                  <td className="td text-right num">{formatNumber(Number(t.quantity), 4)}</td>
-                  <td className="td text-right num text-muted">
-                    {formatNumber(Number(t.unit_price), 6)}
+                  <td className="td">
+                    <div className="font-medium">
+                      {t.assets?.symbol ?? '—'}
+                      {isIpoTrade(t) && (
+                        <span className="ml-2 align-middle">
+                          <Badge tone="accent">arz</Badge>
+                        </span>
+                      )}
+                    </div>
+                    {t.accounts?.name && (
+                      <div className="text-xs text-muted">{t.accounts.name}</div>
+                    )}
                   </td>
-                  <td className="td text-right num">{formatTRY(Number(t.amount_try))}</td>
+                  <td className="td text-right num whitespace-nowrap">
+                    {formatNumber(Number(t.quantity), 4)}{' '}
+                    <span className="text-muted">×</span> {formatNumber(Number(t.unit_price), 6)}
+                  </td>
+                  <td className="td text-right num font-medium">
+                    {formatTRY(Number(t.amount_try))}
+                  </td>
                   <td className="td text-right whitespace-nowrap">
-                    {isOwn ? (
+                    {isIpoTrade(t) ? (
+                      <span className="text-xs text-muted" title="Halka Arz sayfasından düzeltilir">
+                        Halka Arz'dan
+                      </span>
+                    ) : isOwn ? (
                       <div className="inline-flex gap-1">
                         <button className="btn-ghost text-xs" onClick={() => openForm(t)}>
                           Düzenle

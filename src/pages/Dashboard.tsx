@@ -5,7 +5,8 @@ import { tr } from 'date-fns/locale'
 import { useAuth } from '../hooks/useAuth'
 import { useNetWorth, useSnapshots, usePositionsForSnapshots } from '../hooks/useSnapshots'
 import { usePrices } from '../hooks/usePrices'
-import { useIpos, ipoStats } from '../hooks/useIpos'
+import { useIpos } from '../hooks/useIpos'
+import { ipoVirtualTrades } from '../lib/ipoTrades'
 import { useCash } from '../hooks/useCash'
 import { useTable } from '../hooks/useTable'
 import { TRADE_SELECT } from '../hooks/useTrades'
@@ -24,7 +25,7 @@ import {
   todayISO,
   KIND_LABELS,
 } from '../lib/calc'
-import { formatPercent, formatTRY } from '../lib/currency'
+import { formatNumber, formatPercent, formatTRY } from '../lib/currency'
 import {
   computeHoldings,
   holdingTotals,
@@ -44,6 +45,8 @@ export default function Dashboard() {
   const [showNetLine, setShowNetLine] = useState(false)
   /** Fon-hisse grafiğinde ilk 10'dan fazlasını göster */
   const [showAllFunds, setShowAllFunds] = useState(false)
+  /** Fon-hisse kartında pozisyon dökümü — adet, değer, kâr */
+  const [showFundDetail, setShowFundDetail] = useState(false)
 
   const effectiveScope = scope || user?.id || ''
   const isTotal = effectiveScope === 'toplam'
@@ -86,6 +89,19 @@ export default function Dashboard() {
     select: TRADE_SELECT,
   })
 
+  const { ipos, entries, accounts: ipoAccountRows, totalWaiting } = useIpos(
+    isTotal ? null : effectiveScope
+  )
+  /**
+   * Arz dağıtım/satışları sanal işlem olarak deftere katılır — arz hisseleri
+   * yalnızca burada sayılır, ayrıca "elde tutulan arz" kalemi yoktur.
+   */
+  const virtualTrades = useMemo(
+    () => ipoVirtualTrades(ipos, entries, ipoAccountRows),
+    [ipos, entries, ipoAccountRows]
+  )
+  const allTrades = useMemo(() => [...trades, ...virtualTrades], [trades, virtualTrades])
+
   const tradedAssetIds = useMemo(
     () => new Set(trades.map((t) => t.asset_id).filter(Boolean) as string[]),
     [trades]
@@ -96,11 +112,11 @@ export default function Dashboard() {
     [positions, tradedAssetIds]
   )
 
-  const holdings = useMemo(() => computeHoldings(trades, bySymbol), [trades, bySymbol])
+  const holdings = useMemo(() => computeHoldings(allTrades, bySymbol), [allTrades, bySymbol])
   const tradeTotals = useMemo(() => holdingTotals(holdings), [holdings])
   const tradeSeries = useMemo(
-    () => holdingsSeries(trades, bySymbol, todayISO()),
-    [trades, bySymbol]
+    () => holdingsSeries(allTrades, bySymbol, todayISO()),
+    [allTrades, bySymbol]
   )
 
   /** Snapshot kalemleri + alım/satım pozisyonları tek dağılımda */
@@ -117,14 +133,14 @@ export default function Dashboard() {
   const byAccount = useMemo(() => {
     const map = new Map<string, number>()
     for (const s of allocationByAccount(snapshotPositions)) map.set(s.key, s.value)
-    for (const h of holdingsByAccount(trades, holdings)) {
+    for (const h of holdingsByAccount(allTrades, holdings)) {
       map.set(h.key, (map.get(h.key) ?? 0) + h.value)
     }
     return [...map.entries()]
       .map(([key, value]) => ({ key, label: key, value }))
       .filter((s) => s.value !== 0)
       .sort((a, b) => b.value - a.value)
-  }, [snapshotPositions, trades, holdings])
+  }, [snapshotPositions, allTrades, holdings])
 
   /** Fon/sembol bazlı vergi sonrası toplam kazanç */
   const fundProfit = useMemo(
@@ -153,7 +169,6 @@ export default function Dashboard() {
   }, [fundProfit, showAllFunds])
 
   const netChange = change(last?.net_worth_try ?? 0, prev?.net_worth_try)
-  const { ipos, entries, totalWaiting } = useIpos(isTotal ? null : effectiveScope)
 
   /** Kendi hesaplarındaki nakit — Nakit sayfasının toplamı (halka arz hariç) */
   const { totals: cashTotals } = useCash(isTotal ? null : effectiveScope)
@@ -184,27 +199,6 @@ export default function Dashboard() {
   }, [openDebts])
 
   /**
-   * Halka arz hesaplarındaki para portföyün parçası: bekleyen nakit +
-   * henüz satılmamış arzların güncel değeri.
-   */
-  const ipoTotal = useMemo(() => {
-    const held = ipos
-      .filter((i) => i.status === 'dagitildi' || i.status === 'islemde')
-      .reduce((s, i) => {
-        const code = i.bist_code?.trim().toUpperCase()
-        const price = i.manual_price != null
-          ? Number(i.manual_price)
-          : code && bySymbol.get(code)
-            ? Number(bySymbol.get(code)!.price)
-            : null
-        const st = ipoStats(i, entries, price)
-        // Elde tutulan (satılmamış) lotun değeri; fiyat yoksa maliyetiyle sayılır
-        return s + (st.holding ?? st.openLot * Number(i.lot_price ?? 0))
-      }, 0)
-    return { waiting: totalWaiting, held, total: totalWaiting + held }
-  }, [ipos, entries, bySymbol, totalWaiting])
-
-  /**
    * Son snapshot'taki adetler güncel fiyatlarla değerlenir.
    * Adedi veya fiyatı olmayan kalemler snapshot'taki tutarıyla sayılır.
    */
@@ -227,12 +221,12 @@ export default function Dashboard() {
 
   const liveAssets =
     (live?.total ?? (tradedAssetIds.size ? 0 : last?.total_assets_try ?? 0)) +
-    ipoTotal.total +
+    totalWaiting +
     tradeTotals.value +
     cashTotals.cash
   const showLive =
     (live && live.priced > 0) ||
-    ipoTotal.total > 0 ||
+    totalWaiting > 0 ||
     openDebtTotal > 0 ||
     tradeTotals.value > 0 ||
     cashTotals.cash > 0
@@ -380,18 +374,12 @@ export default function Dashboard() {
                 </p>
               </div>
             )}
-            {ipoTotal.waiting > 0 && (
+            {totalWaiting > 0 && (
               <div>
-                <p className="text-lg text-pos">{formatTRY(ipoTotal.waiting)}</p>
+                <p className="text-lg text-pos">{formatTRY(totalWaiting)}</p>
                 <p className="text-xs text-muted">
                   <Link to="/ipo" className="hover:text-ink">Halka arz iadesi</Link> · çekilmeyi bekliyor
                 </p>
-              </div>
-            )}
-            {ipoTotal.held > 0 && (
-              <div>
-                <p className="text-lg text-ink">{formatTRY(ipoTotal.held)}</p>
-                <p className="text-xs text-muted">Elde tutulan halka arz hissesi</p>
               </div>
             )}
             <div className="text-xs text-muted">
@@ -459,22 +447,84 @@ export default function Dashboard() {
           }
         >
           <AccountBar data={fundProfitShown} />
+          {showFundDetail && (
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[640px]">
+                <thead>
+                  <tr>
+                    <th className="th">Sembol</th>
+                    <th className="th text-right">Adet</th>
+                    <th className="th text-right">Güncel fiyat</th>
+                    <th className="th text-right">Değer</th>
+                    <th className="th text-right">Maliyet</th>
+                    <th className="th text-right">Kâr / Zarar</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {holdings
+                    .filter((h) => h.quantity > 0)
+                    .map((h) => (
+                      <tr key={h.symbol} className="hover:bg-surface2/50">
+                        <td className="td font-medium">
+                          {h.symbol}
+                          <span className="ml-2 text-xs text-muted">{h.kind}</span>
+                        </td>
+                        <td className="td text-right num">{formatNumber(h.quantity, 4)}</td>
+                        <td className="td text-right num text-muted">
+                          {h.price != null ? formatNumber(h.price, 4) : '—'}
+                        </td>
+                        <td className="td text-right num font-medium">
+                          {formatTRY(h.value ?? h.costBasis)}
+                          {h.price == null && (
+                            <span className="ml-1 text-xs text-muted font-normal">maliyet</span>
+                          )}
+                        </td>
+                        <td className="td text-right num text-muted">{formatTRY(h.costBasis)}</td>
+                        <td className="td text-right num">
+                          {h.unrealized != null ? (
+                            <span className={h.unrealized >= 0 ? 'text-pos' : 'text-neg'}>
+                              {formatTRY(h.unrealized)}
+                              {h.unrealizedPct != null && (
+                                <span className="ml-1 text-xs">
+                                  {formatPercent(h.unrealizedPct)}
+                                </span>
+                              )}
+                            </span>
+                          ) : (
+                            <span className="text-muted">fiyat yok</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          )}
           <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs text-muted">
               Her kalemin gerçekleşen ve açık kârı toplanır; fonlarda stopaj düşülür, hisselerde
               vergi yoktur.
             </p>
-            {fundProfit.length > FUNDS_SHOWN && (
+            <div className="flex items-center gap-2">
               <button
                 type="button"
                 className="btn-ghost text-xs"
-                onClick={() => setShowAllFunds((v) => !v)}
+                onClick={() => setShowFundDetail((v) => !v)}
               >
-                {showAllFunds
-                  ? 'Daha az göster'
-                  : `Daha fazla göster (${fundProfit.length - FUNDS_SHOWN})`}
+                {showFundDetail ? 'Detayı gizle' : 'Detay'}
               </button>
-            )}
+              {fundProfit.length > FUNDS_SHOWN && (
+                <button
+                  type="button"
+                  className="btn-ghost text-xs"
+                  onClick={() => setShowAllFunds((v) => !v)}
+                >
+                  {showAllFunds
+                    ? 'Daha az göster'
+                    : `Daha fazla göster (${fundProfit.length - FUNDS_SHOWN})`}
+                </button>
+              )}
+            </div>
           </div>
         </Card>
       )}

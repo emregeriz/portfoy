@@ -8,7 +8,7 @@ import { usePrices } from '../hooks/usePrices'
 import StatCard from '../components/StatCard'
 import NumberInput from '../components/NumberInput'
 import { Badge, Card, Empty, ErrorBox, Modal, PageHeader, Spinner } from '../components/ui'
-import { formatNumber, formatTRY, parseAmount, parseTRInput, toTRInput } from '../lib/currency'
+import { formatNumber, formatPercent, formatTRY, parseAmount, parseTRInput, toTRInput } from '../lib/currency'
 import { todayISO } from '../lib/calc'
 import type { IpoEntry, IpoRow, IpoState } from '../types/db'
 
@@ -39,11 +39,14 @@ export default function IpoPage() {
   const { bySymbol, refresh: refreshPrices, refreshing } = usePrices()
   const {
     ipos, entries, ledger, ipoAccounts, accounts, balanceOf, totalWaiting, loading, error,
-    createIpo, updateIpo, removeIpo, toggleEntry, setEntry, applyAllocation,
+    createIpo, updateIpo, removeIpo, setDefaultLot, toggleEntry, setEntry, applyAllocation,
     settleDistribution, sellEntries, unsellEntries, transfer, createIpoAccount, removeAccount,
   } = useIpos(user?.id)
 
-  const [expanded, setExpanded] = useState<string | null>(null)
+  /** Sol listedeki seçili arz — detay paneli bunu gösterir */
+  const [selected, setSelected] = useState<string | null>(null)
+  /** Hesap Bazlı Kâr tablosunun kapsamı — boş = tüm arzlar, dolu = tek arz id */
+  const [profitScope, setProfitScope] = useState('')
   const [modal, setModal] = useState<ModalState>(null)
   const [formError, setFormError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -52,6 +55,8 @@ export default function IpoPage() {
   const [pickedAccounts, setPickedAccounts] = useState<Set<string>>(new Set())
   const [equalLot, setEqualLot] = useState('')
   const [allocMap, setAllocMap] = useState<Record<string, string>>({})
+  /** Dağıtım modalında hesap başına istenen lot — yanlış girilen talep düzeltilebilir */
+  const [reqMap, setReqMap] = useState<Record<string, string>>({})
   const [saleSel, setSaleSel] = useState<Set<string>>(new Set())
   const [salePrice, setSalePrice] = useState('')
   const [saleDate, setSaleDate] = useState(todayISO())
@@ -71,6 +76,10 @@ export default function IpoPage() {
     entries.find((e) => e.ipo_id === ipoId && e.account_id === accountId)
 
   const active = useMemo(() => ipos.filter((i) => i.status !== 'iptal'), [ipos])
+  /** İptal edilen arzlar listeden düşer ama kaybolmaz — geri alınabilir */
+  const cancelled = useMemo(() => ipos.filter((i) => i.status === 'iptal'), [ipos])
+  /** Seçim geçersizse (silindi/iptal oldu) ilk arza düşer */
+  const selectedIpo = active.find((i) => i.id === selected) ?? active[0] ?? null
 
   const totals = useMemo(() => {
     let held = 0
@@ -86,11 +95,34 @@ export default function IpoPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, entries, bySymbol])
 
-  /** Hesap bazlı kâr — hangi hesaptan ne kazandım */
+  /**
+   * Hesap bazlı kâr — hangi hesaptan ne kazandım.
+   * profitScope doluysa yalnızca o arz sayılır; lot/güncel fiyat o arzın
+   * gerçek fiyatları olur. "Tümü"nde birden fazla arz ağırlıklı ortalamayla
+   * birleşir, eldeki değer hesap başına toplanır.
+   */
   const byAccount = useMemo(() => {
-    const map = new Map<string, { name: string; lot: number; cost: number; realized: number; open: number }>()
-    for (const a of ipoAccounts) map.set(a.id, { name: a.name, lot: 0, cost: 0, realized: 0, open: 0 })
-    for (const ipo of active) {
+    const scoped = profitScope ? active.filter((i) => i.id === profitScope) : active
+    const map = new Map<
+      string,
+      {
+        name: string
+        lot: number
+        cost: number
+        realized: number
+        open: number
+        /** Elde duran (satılmamış) lotların değeri — fiyatı yoksa arz fiyatıyla sayılır */
+        heldValue: number
+        openValue: number
+        pricedOpenLot: number
+      }
+    >()
+    for (const a of ipoAccounts)
+      map.set(a.id, {
+        name: a.name, lot: 0, cost: 0, realized: 0, open: 0,
+        heldValue: 0, openValue: 0, pricedOpenLot: 0,
+      })
+    for (const ipo of scoped) {
       const lotPrice = Number(ipo.lot_price ?? 0)
       const price = priceOf(ipo)
       for (const e of entries.filter((x) => x.ipo_id === ipo.id && x.participated)) {
@@ -98,18 +130,33 @@ export default function IpoPage() {
         if (!row) continue
         const alloc = Number(e.allocated_lot)
         const sold = Number(e.sold_lot ?? 0)
+        const openLot = Math.max(alloc - sold, 0)
         row.lot += alloc
         row.cost += alloc * lotPrice
         row.realized += sold * (Number(e.sold_price ?? 0) - lotPrice)
-        if (price != null) row.open += Math.max(alloc - sold, 0) * (price - lotPrice)
+        row.heldValue += openLot * (price ?? lotPrice)
+        if (price != null) {
+          row.open += openLot * (price - lotPrice)
+          row.openValue += openLot * price
+          row.pricedOpenLot += openLot
+        }
       }
     }
     return [...map.entries()]
-      .map(([id, v]) => ({ id, ...v, total: v.realized + v.open }))
+      .map(([id, v]) => ({
+        id,
+        ...v,
+        total: v.realized + v.open,
+        /** Ağırlıklı ortalama lot (arz) fiyatı — tek arz seçiliyken o arzın fiyatı */
+        avgLotPrice: v.lot > 0 ? v.cost / v.lot : null,
+        /** Elde duran lotların ağırlıklı ortalama güncel fiyatı */
+        avgPrice: v.pricedOpenLot > 0 ? v.openValue / v.pricedOpenLot : null,
+        pct: v.cost > 0 ? ((v.realized + v.open) / v.cost) * 100 : null,
+      }))
       .filter((r) => r.lot > 0 || r.cost > 0)
       .sort((a, b) => b.total - a.total)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, entries, ipoAccounts, bySymbol])
+  }, [active, entries, ipoAccounts, bySymbol, profitScope])
 
   const guard = async (fn: () => Promise<unknown>, keepOpen = false) => {
     setBusy(true)
@@ -157,8 +204,23 @@ export default function IpoPage() {
 
     void guard(async () => {
       if (code) await ensureAsset(code, 'hisse', values.name)
-      if (modal.ipo) await updateIpo(modal.ipo.id, values)
-      else await createIpo({ ...values, user_id: user.id }, [...pickedAccounts])
+      if (modal.ipo) {
+        await updateIpo(modal.ipo.id, values)
+        const prevLot = modal.ipo.default_lot != null ? Number(modal.ipo.default_lot) : null
+        const prevPrice = modal.ipo.lot_price != null ? Number(modal.ipo.lot_price) : null
+        const lotChanged = values.default_lot != null && values.default_lot !== prevLot
+        const priceChanged = values.lot_price != null && values.lot_price !== prevPrice
+        // Talep lotu değişince katılan hesapların istenen lotu da güncellenir
+        if (lotChanged) await setDefaultLot(modal.ipo.id, values.default_lot as number)
+        // Dağıtım yapılmışsa iadeler yeni lot/fiyata göre yeniden yazılır
+        if ((lotChanged || priceChanged) && modal.ipo.status !== 'talep_verildi') {
+          const iadeDate =
+            ledger.find((l) => l.ipo_id === modal.ipo!.id && l.kind === 'iade')?.date ?? todayISO()
+          await settleDistribution({ ...modal.ipo, ...values } as IpoRow, iadeDate)
+        }
+      } else {
+        await createIpo({ ...values, user_id: user.id }, [...pickedAccounts])
+      }
     })
   }
 
@@ -166,12 +228,17 @@ export default function IpoPage() {
   const openAllocate = (ipo: IpoRow) => {
     setFormError(null)
     const map: Record<string, string> = {}
+    const req: Record<string, string> = {}
     for (const e of entries.filter((x) => x.ipo_id === ipo.id && x.participated)) {
       map[e.account_id] = e.allocated_lot ? String(e.allocated_lot) : ''
+      req[e.account_id] = e.requested_lot ? String(e.requested_lot) : ''
     }
     setAllocMap(map)
+    setReqMap(req)
     setEqualLot('')
-    setMoveDate(todayISO())
+    // Daha önce iade yazılmışsa aynı tarihi koru — düzeltme tarihi kaydırmasın
+    const iadeDate = ledger.find((l) => l.ipo_id === ipo.id && l.kind === 'iade')?.date
+    setMoveDate(iadeDate ?? todayISO())
     setModal({ type: 'allocate', ipo })
   }
 
@@ -180,6 +247,12 @@ export default function IpoPage() {
     if (modal?.type !== 'allocate' || !user) return
     const ipo = modal.ipo
     void guard(async () => {
+      // Yanlış girilen talep (istenen lot) da buradan düzeltilir
+      for (const [accountId, raw] of Object.entries(reqMap)) {
+        const lot = parseAmount(raw)
+        const current = Number(entryOf(ipo.id, accountId)?.requested_lot ?? 0)
+        if (lot !== current) await setEntry(ipo.id, accountId, user.id, { requested_lot: lot })
+      }
       const equal = parseAmount(equalLot)
       if (equal > 0) {
         await applyAllocation(ipo.id, equal)
@@ -191,7 +264,8 @@ export default function IpoPage() {
         }
       }
       await settleDistribution(ipo, moveDate)
-      await updateIpo(ipo.id, { status: 'dagitildi' })
+      // Düzeltme sonraki aşamaları geri sarmasın — durum yalnızca ilk dağıtımda ilerler
+      if (ipo.status === 'talep_verildi') await updateIpo(ipo.id, { status: 'dagitildi' })
     })
   }
 
@@ -279,7 +353,8 @@ export default function IpoPage() {
         />
       </div>
 
-      {/* ------------------------------------------------- hesap bakiyeleri */}
+      {/* ------------- hesap bakiyeleri + hesap bazlı kâr — 6/6 yan yana */}
+      <div className="grid gap-4 lg:grid-cols-2 items-start">
       <Card
         title="Halka Arz Hesapları"
         actions={<span className="text-xs text-muted">Toplam {formatTRY(totalWaiting)}</span>}
@@ -333,9 +408,11 @@ export default function IpoPage() {
                           <button
                             className="btn-danger text-xs"
                             onClick={() => {
-                              if (confirm(`"${a.name}" hesabı ve hareketleri silinsin mi?`)) {
-                                void guard(() => removeAccount(a.id))
-                              }
+                              const msg =
+                                bal > 0.004
+                                  ? `"${a.name}" hesabında ${formatTRY(bal)} duruyor — silersen bu para ve arz katılımları da silinir, alım/satım kayıtları hesapsız kalır. Yine de silinsin mi?`
+                                  : `"${a.name}" hesabı, hareketleri ve arz katılımları silinsin mi? Alım/satım kayıtları hesapsız kalır.`
+                              if (confirm(msg)) void guard(() => removeAccount(a.id))
                             }}
                           >
                             Sil
@@ -356,248 +433,478 @@ export default function IpoPage() {
         </p>
       </Card>
 
-      {/* ------------------------------------------------------------ arzlar */}
+      {/* --------------------------------------------------- hesap bazlı kâr */}
+      {active.length > 0 && (
+        <Card
+          title="Hesap Bazlı Kâr"
+          actions={
+            <select
+              className="text-sm"
+              value={profitScope}
+              onChange={(e) => setProfitScope(e.target.value)}
+            >
+              <option value="">Tüm arzlar</option>
+              {active.map((i) => (
+                <option key={i.id} value={i.id}>
+                  {i.name}
+                </option>
+              ))}
+            </select>
+          }
+        >
+          {byAccount.length === 0 ? (
+            <Empty>
+              {profitScope ? 'Bu arzda düşen lot yok.' : 'Henüz düşen lot yok.'}
+            </Empty>
+          ) : profitScope ? (
+            /* Tek arz: o arzın lot/güncel fiyatıyla hesap kırılımı */
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[680px]">
+                <thead>
+                  <tr>
+                    <th className="th">Hesap</th>
+                    <th className="th text-right">Düşen lot</th>
+                    <th className="th text-right">Lot fiyatı</th>
+                    <th className="th text-right">Güncel fiyat</th>
+                    <th className="th text-right">Toplam kâr</th>
+                    <th className="th text-right">Bakiye</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {byAccount.map((r) => (
+                    <tr key={r.id} className="hover:bg-surface2/50">
+                      <td className="td font-medium">{r.name}</td>
+                      <td className="td text-right num">{formatNumber(r.lot, 0)}</td>
+                      <td className="td text-right num text-muted">
+                        {r.avgLotPrice != null ? formatTRY(r.avgLotPrice) : '—'}
+                      </td>
+                      <td className="td text-right num">
+                        {r.avgPrice != null ? formatTRY(r.avgPrice) : '—'}
+                      </td>
+                      <td className="td text-right">
+                        <div
+                          className={`num font-semibold ${r.total >= 0 ? 'text-pos' : 'text-neg'}`}
+                        >
+                          {formatTRY(r.total)}
+                          {r.pct != null && (
+                            <span className="ml-1 text-xs font-normal">
+                              {formatPercent(r.pct)}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-muted num">
+                          gerçekleşen {formatTRY(r.realized)} · açık {formatTRY(r.open)}
+                        </div>
+                      </td>
+                      <td className="td text-right num text-muted">
+                        {formatTRY(balanceOf.get(r.id) ?? 0)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            /* Tüm arzlar: hesap başına eldeki toplam değer + total kâr */
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[560px]">
+                <thead>
+                  <tr>
+                    <th className="th">Hesap</th>
+                    <th className="th text-right" title="Satılmamış arz hisselerinin güncel değeri">
+                      Eldeki değer
+                    </th>
+                    <th className="th text-right">Toplam kâr</th>
+                    <th className="th text-right">Bakiye</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {byAccount.map((r) => (
+                    <tr key={r.id} className="hover:bg-surface2/50">
+                      <td className="td font-medium">{r.name}</td>
+                      <td className="td text-right num font-medium">
+                        {formatTRY(r.heldValue)}
+                        <div className="text-xs text-muted font-normal">
+                          {formatNumber(r.lot, 0)} lot düştü
+                        </div>
+                      </td>
+                      <td className="td text-right">
+                        <div
+                          className={`num font-semibold ${r.total >= 0 ? 'text-pos' : 'text-neg'}`}
+                        >
+                          {formatTRY(r.total)}
+                          {r.pct != null && (
+                            <span className="ml-1 text-xs font-normal">
+                              {formatPercent(r.pct)}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-muted num">
+                          gerçekleşen {formatTRY(r.realized)} · açık {formatTRY(r.open)}
+                        </div>
+                      </td>
+                      <td className="td text-right num text-muted">
+                        {formatTRY(balanceOf.get(r.id) ?? 0)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      )}
+      </div>
+
+      {/* --------------------------- arzlar: sol liste + sağ detay paneli */}
       {active.length === 0 ? (
-        <Empty>
-          {noAccounts ? 'Önce halka arz hesaplarını ekle.' : 'Henüz arz eklenmedi.'}
-        </Empty>
+        <Empty>{noAccounts ? 'Önce halka arz hesaplarını ekle.' : 'Henüz arz eklenmedi.'}</Empty>
       ) : (
-        active.map((ipo) => {
-          const s = statsOf(ipo)
-          const meta = stateMeta(ipo.status)
-          const open = expanded === ipo.id
-          const joined = entries.filter((e) => e.ipo_id === ipo.id && e.participated)
-          const future = ipo.trade_start_date && ipo.trade_start_date > todayISO()
-          return (
-            <Card key={ipo.id}>
-              <div className="flex flex-wrap items-center gap-3">
-                <button className="text-left flex-1 min-w-[220px]" onClick={() => setExpanded(open ? null : ipo.id)}>
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold">{ipo.name}</span>
-                    {ipo.bist_code && <span className="text-xs text-muted">{ipo.bist_code}</span>}
-                    <Badge tone={meta.tone}>{meta.label}</Badge>
-                  </div>
-                  <div className="text-xs text-muted mt-0.5">
-                    {ipo.ipo_date ? format(parseISO(ipo.ipo_date), 'd MMM yyyy', { locale: tr }) : 'tarihsiz'}
-                    {ipo.lot_price != null && ` · lot ${formatTRY(ipo.lot_price)}`}
-                    {ipo.default_lot != null && ` · hesap başına ${formatNumber(ipo.default_lot, 0)} lot`}
-                    {` · ${s.accountCount} hesap`}
-                    {s.totalAllocated > 0 && ` · düşen ${formatNumber(s.totalAllocated, 0)} lot`}
-                    {s.price != null && ` · güncel ${formatTRY(s.price)}`}
-                  </div>
-                  {future && (
-                    <div className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
-                      {format(parseISO(ipo.trade_start_date as string), 'd MMMM', { locale: tr })} saat
-                      10:01'de fiyat otomatik çekilecek
+        <div className="grid gap-4 lg:grid-cols-12 items-start">
+          {/* Sol: arz listesi */}
+          <Card className="p-0 lg:col-span-4 overflow-hidden">
+            <header className="flex items-center justify-between px-4 py-3 border-b border-border">
+              <h2 className="text-sm font-semibold text-ink">Arz Listesi</h2>
+              <Badge tone="accent">{active.length} arz</Badge>
+            </header>
+            <div className="divide-y divide-border max-h-[640px] overflow-y-auto">
+              {active.map((ipo) => {
+                const s = statsOf(ipo)
+                const meta = stateMeta(ipo.status)
+                const sel = selectedIpo?.id === ipo.id
+                return (
+                  <button
+                    key={ipo.id}
+                    onClick={() => setSelected(ipo.id)}
+                    aria-current={sel ? 'true' : undefined}
+                    className={`block w-full text-left px-4 py-3 transition-colors ${
+                      sel ? 'bg-accent/10' : 'hover:bg-surface2/60'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className={`font-medium truncate ${sel ? 'text-accent' : ''}`}>
+                            {ipo.name}
+                          </span>
+                          {ipo.bist_code && (
+                            <span className="text-xs text-muted shrink-0">{ipo.bist_code}</span>
+                          )}
+                        </div>
+                        <div className="mt-1">
+                          <Badge tone={meta.tone}>{meta.label}</Badge>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="num text-sm font-medium">{formatTRY(s.holding ?? s.cost)}</div>
+                        {s.profit != null && s.profit !== 0 && (
+                          <div className={`text-xs num ${s.profit >= 0 ? 'text-pos' : 'text-neg'}`}>
+                            {s.profit >= 0 ? '+' : ''}
+                            {formatTRY(s.profit)}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  )}
-                </button>
-
-                <div className="text-right">
-                  <div className="num font-semibold">{formatTRY(s.holding ?? s.cost)}</div>
-                  {s.profit != null && s.profit !== 0 && (
-                    <div className={`text-xs num ${s.profit >= 0 ? 'text-pos' : 'text-neg'}`}>
-                      {s.profit >= 0 ? '+' : ''}{formatTRY(s.profit)}
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex flex-wrap gap-2">
-                  {ipo.status === 'talep_verildi' && (
-                    <button className="btn-ghost text-xs" onClick={() => openAllocate(ipo)}>
-                      Dağıtıldı
-                    </button>
-                  )}
-                  {ipo.status === 'dagitildi' && (
-                    <button className="btn-ghost text-xs" onClick={() => openTrading(ipo)}>
-                      İşlem görmeye başladı
-                    </button>
-                  )}
-                  {(ipo.status === 'islemde' || ipo.status === 'dagitildi') && s.openLot > 0 && (
-                    <button className="btn-primary text-xs" onClick={() => openSale(ipo)}>
-                      Sat
-                    </button>
-                  )}
-                  {ipo.status !== 'talep_verildi' && (
-                    <button className="btn-ghost text-xs" onClick={() => openAllocate(ipo)} title="Düşen lotu düzelt">
-                      Dağıtımı düzelt
-                    </button>
-                  )}
-                  {ipo.bist_code && (
-                    <button
-                      className="btn-ghost text-xs"
-                      disabled={refreshing}
-                      onClick={() => void refreshPrices()}
-                      title={`${ipo.bist_code} güncel fiyatını BIST'ten çek`}
-                    >
-                      {refreshing ? 'Çekiliyor…' : '↻ Fiyat çek'}
-                    </button>
-                  )}
-                  <button className="btn-ghost text-xs" onClick={() => openIpoModal(ipo)}>
-                    Düzenle
                   </button>
-                </div>
-              </div>
-
-              {open && (
-                <div className="mt-4 border-t border-border pt-3">
-                  {noAccounts ? (
-                    <Empty>Halka arz hesabı yok.</Empty>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full min-w-[820px]">
-                        <thead>
-                          <tr>
-                            <th className="th">Katıldım</th>
-                            <th className="th">Hesap</th>
-                            <th className="th text-right">İstenen</th>
-                            <th className="th text-right">Düşen</th>
-                            <th className="th text-right">Talep tutarı</th>
-                            <th className="th text-right">İade</th>
-                            <th className="th text-right">Satış</th>
-                            <th className="th text-right">Kâr</th>
-                            <th className="th"></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {ipoAccounts.map((a) => {
-                            const e = entryOf(ipo.id, a.id)
-                            const req = Number(e?.requested_lot ?? 0)
-                            const alloc = Number(e?.allocated_lot ?? 0)
-                            const sold = Number(e?.sold_lot ?? 0)
-                            const soldPrice = e?.sold_price != null ? Number(e.sold_price) : null
-                            const lot = Number(ipo.lot_price ?? 0)
-                            const isIn = Boolean(e?.participated)
-                            const price = s.price
-                            const realized = sold * ((soldPrice ?? 0) - lot)
-                            const openProfit = price != null ? Math.max(alloc - sold, 0) * (price - lot) : 0
-                            const profit = realized + openProfit
-                            return (
-                              <tr key={a.id} className={isIn ? '' : 'opacity-50'}>
-                                <td className="td">
-                                  <input
-                                    type="checkbox"
-                                    className="w-4 h-4"
-                                    checked={isIn}
-                                    disabled={!user || busy}
-                                    onChange={(ev) =>
-                                      void guard(() => toggleEntry(ipo, a.id, ev.target.checked, user!.id), true)
-                                    }
-                                  />
-                                </td>
-                                <td className="td font-medium">{a.name}</td>
-                                <td className="td text-right num">{req ? formatNumber(req, 0) : '—'}</td>
-                                <td className="td text-right num">{alloc ? formatNumber(alloc, 0) : '—'}</td>
-                                <td className="td text-right num text-muted">{formatTRY(req * lot)}</td>
-                                <td className="td text-right num text-pos">
-                                  {formatTRY(Math.max(req - alloc, 0) * lot)}
-                                </td>
-                                <td className="td text-right num text-xs">
-                                  {sold > 0 && soldPrice != null ? (
-                                    <span className="text-ink">
-                                      {formatNumber(sold, 0)} lot × {formatTRY(soldPrice)}
-                                      <span className="block text-muted">{e?.sold_date}</span>
-                                    </span>
-                                  ) : (
-                                    <span className="text-muted">—</span>
-                                  )}
-                                </td>
-                                <td className={`td text-right num ${profit >= 0 ? 'text-pos' : 'text-neg'}`}>
-                                  {alloc > 0 ? formatTRY(profit) : '—'}
-                                </td>
-                                <td className="td text-right whitespace-nowrap">
-                                  {isIn && alloc > 0 && (
-                                    sold > 0 ? (
-                                      <button
-                                        className="btn-ghost text-xs"
-                                        onClick={() => void guard(() => unsellEntries(ipo, [e!.id]), true)}
-                                      >
-                                        Satışı geri al
-                                      </button>
-                                    ) : (
-                                      <button className="btn-ghost text-xs" onClick={() => openSale(ipo, e!)}>
-                                        Sat
-                                      </button>
-                                    )
-                                  )}
-                                </td>
-                              </tr>
-                            )
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-
-                  <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted">
-                    <span>{s.accountCount} hesaptan katılım</span>
-                    <span>İstenen: {formatNumber(s.totalRequested, 0)} lot</span>
-                    <span>Düşen: {formatNumber(s.totalAllocated, 0)} lot</span>
-                    <span>Maliyet: {formatTRY(s.cost)}</span>
-                    {s.refund > 0 && <span className="text-pos">İade: {formatTRY(s.refund)}</span>}
-                    {s.proceeds > 0 && <span>Satış geliri: {formatTRY(s.proceeds)}</span>}
+                )
+              })}
+            </div>
+            {cancelled.length > 0 && (
+              <div className="border-t border-border px-4 py-3 flex flex-wrap items-center gap-2 text-xs text-muted">
+                <span>İptal:</span>
+                {cancelled.map((i) => (
+                  <span
+                    key={i.id}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface2 px-2.5 py-1"
+                  >
+                    {i.name}
                     <button
-                      className="btn-danger text-xs ml-auto"
+                      className="text-accent hover:underline"
+                      onClick={() =>
+                        void guard(() => updateIpo(i.id, { status: 'talep_verildi' }), true)
+                      }
+                    >
+                      geri al
+                    </button>
+                    <button
+                      className="text-neg hover:underline"
                       onClick={() => {
-                        if (confirm(`"${ipo.name}" arzı ve tüm kayıtları silinsin mi?`)) {
-                          void guard(() => removeIpo(ipo.id), true)
+                        if (confirm(`"${i.name}" arzı kalıcı olarak silinsin mi?`)) {
+                          void guard(() => removeIpo(i.id), true)
                         }
                       }}
                     >
-                      Sil
+                      sil
                     </button>
-                  </div>
-                  {joined.length === 0 && (
-                    <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
-                      Hiçbir hesap işaretli değil — katıldığın hesapların kutusunu işaretle,
-                      hesap başına {formatNumber(ipo.default_lot ?? 0, 0)} lot otomatik yazılır.
-                    </p>
-                  )}
-                </div>
-              )}
-            </Card>
-          )
-        })
-      )}
-
-      {/* --------------------------------------------------- hesap bazlı kâr */}
-      {byAccount.length > 0 && (
-        <Card title="Hesap Bazlı Kâr">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[560px]">
-              <thead>
-                <tr>
-                  <th className="th">Hesap</th>
-                  <th className="th text-right">Düşen lot</th>
-                  <th className="th text-right">Maliyet</th>
-                  <th className="th text-right">Gerçekleşen</th>
-                  <th className="th text-right">Açık</th>
-                  <th className="th text-right">Toplam kâr</th>
-                  <th className="th text-right">Bakiye</th>
-                </tr>
-              </thead>
-              <tbody>
-                {byAccount.map((r) => (
-                  <tr key={r.id}>
-                    <td className="td font-medium">{r.name}</td>
-                    <td className="td text-right num">{formatNumber(r.lot, 0)}</td>
-                    <td className="td text-right num text-muted">{formatTRY(r.cost)}</td>
-                    <td className={`td text-right num ${r.realized >= 0 ? 'text-pos' : 'text-neg'}`}>
-                      {formatTRY(r.realized)}
-                    </td>
-                    <td className={`td text-right num ${r.open >= 0 ? 'text-pos' : 'text-neg'}`}>
-                      {formatTRY(r.open)}
-                    </td>
-                    <td className={`td text-right num font-semibold ${r.total >= 0 ? 'text-pos' : 'text-neg'}`}>
-                      {formatTRY(r.total)}
-                    </td>
-                    <td className="td text-right num text-muted">{formatTRY(balanceOf.get(r.id) ?? 0)}</td>
-                  </tr>
+                  </span>
                 ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
+              </div>
+            )}
+          </Card>
+
+          {/* Sağ: seçili arzın detayı */}
+          <Card className="lg:col-span-8">
+            {!selectedIpo ? (
+              <Empty>Soldan bir arz seç.</Empty>
+            ) : (
+              (() => {
+                const ipo = selectedIpo
+                const s = statsOf(ipo)
+                const meta = stateMeta(ipo.status)
+                const joined = entries.filter((e) => e.ipo_id === ipo.id && e.participated)
+                const future = ipo.trade_start_date && ipo.trade_start_date > todayISO()
+                return (
+                  <>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <div className="flex-1 min-w-[220px]">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold">{ipo.name}</span>
+                          {ipo.bist_code && (
+                            <span className="text-xs text-muted">{ipo.bist_code}</span>
+                          )}
+                          <Badge tone={meta.tone}>{meta.label}</Badge>
+                        </div>
+                        <div className="text-xs text-muted mt-0.5">
+                          {ipo.ipo_date
+                            ? format(parseISO(ipo.ipo_date), 'd MMM yyyy', { locale: tr })
+                            : 'tarihsiz'}
+                          {ipo.lot_price != null && ` · lot ${formatTRY(ipo.lot_price)}`}
+                          {ipo.default_lot != null &&
+                            ` · hesap başına ${formatNumber(ipo.default_lot, 0)} lot`}
+                          {` · ${s.accountCount} hesap`}
+                          {s.totalAllocated > 0 &&
+                            ` · düşen ${formatNumber(s.totalAllocated, 0)} lot`}
+                          {s.price != null && ` · güncel ${formatTRY(s.price)}`}
+                        </div>
+                        {future && (
+                          <div className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
+                            {format(parseISO(ipo.trade_start_date as string), 'd MMMM', {
+                              locale: tr,
+                            })}{' '}
+                            saat 10:01'de fiyat otomatik çekilecek
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="text-right">
+                        <div className="num font-semibold">{formatTRY(s.holding ?? s.cost)}</div>
+                        {s.profit != null && s.profit !== 0 && (
+                          <div className={`text-xs num ${s.profit >= 0 ? 'text-pos' : 'text-neg'}`}>
+                            {s.profit >= 0 ? '+' : ''}
+                            {formatTRY(s.profit)}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {ipo.status === 'talep_verildi' && (
+                        <button className="btn-ghost text-xs" onClick={() => openAllocate(ipo)}>
+                          Dağıtıldı
+                        </button>
+                      )}
+                      {ipo.status === 'dagitildi' && (
+                        <button className="btn-ghost text-xs" onClick={() => openTrading(ipo)}>
+                          İşlem görmeye başladı
+                        </button>
+                      )}
+                      {(ipo.status === 'islemde' || ipo.status === 'dagitildi') && s.openLot > 0 && (
+                        <button className="btn-primary text-xs" onClick={() => openSale(ipo)}>
+                          Sat
+                        </button>
+                      )}
+                      {ipo.status !== 'talep_verildi' && (
+                        <button
+                          className="btn-ghost text-xs"
+                          onClick={() => openAllocate(ipo)}
+                          title="Düşen lotu düzelt"
+                        >
+                          Dağıtımı düzelt
+                        </button>
+                      )}
+                      {ipo.bist_code && (
+                        <button
+                          className="btn-ghost text-xs"
+                          disabled={refreshing}
+                          onClick={() => void refreshPrices()}
+                          title={`${ipo.bist_code} güncel fiyatını BIST'ten çek`}
+                        >
+                          {refreshing ? 'Çekiliyor…' : '↻ Fiyat çek'}
+                        </button>
+                      )}
+                      <button className="btn-ghost text-xs" onClick={() => openIpoModal(ipo)}>
+                        Düzenle
+                      </button>
+                      {ipo.status === 'talep_verildi' && (
+                        <button
+                          className="btn-ghost text-xs"
+                          title="Arz iptal oldu — kayıt silinmez, listenin altında durur"
+                          onClick={() => {
+                            if (confirm(`"${ipo.name}" arzı iptal olarak işaretlensin mi?`)) {
+                              void guard(() => updateIpo(ipo.id, { status: 'iptal' }), true)
+                            }
+                          }}
+                        >
+                          İptal et
+                        </button>
+                      )}
+                      <button
+                        className="btn-danger text-xs"
+                        onClick={() => {
+                          if (
+                            confirm(
+                              `"${ipo.name}" arzı, katılımları ve hesaplara yazılmış iade/satış hareketleri silinsin mi?`
+                            )
+                          ) {
+                            void guard(() => removeIpo(ipo.id), true)
+                          }
+                        }}
+                      >
+                        Sil
+                      </button>
+                    </div>
+
+                    <div className="mt-4 border-t border-border pt-3">
+                      {noAccounts ? (
+                        <Empty>Halka arz hesabı yok.</Empty>
+                      ) : (
+                        <div className="overflow-x-auto">
+                          <table className="w-full">
+                            <thead>
+                              <tr>
+                                <th className="th">Hesap</th>
+                                <th className="th text-right" title="İstenen → düşen lot">
+                                  İst → Düşen
+                                </th>
+                                <th className="th text-right">İade</th>
+                                <th className="th text-right">Satış</th>
+                                <th className="th text-right">Kâr</th>
+                                <th className="th"></th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {ipoAccounts.map((a) => {
+                                const e = entryOf(ipo.id, a.id)
+                                const req = Number(e?.requested_lot ?? 0)
+                                const alloc = Number(e?.allocated_lot ?? 0)
+                                const sold = Number(e?.sold_lot ?? 0)
+                                const soldPrice = e?.sold_price != null ? Number(e.sold_price) : null
+                                const lot = Number(ipo.lot_price ?? 0)
+                                const isIn = Boolean(e?.participated)
+                                const price = s.price
+                                const refund = Math.max(req - alloc, 0) * lot
+                                const realized = sold * ((soldPrice ?? 0) - lot)
+                                const openProfit =
+                                  price != null ? Math.max(alloc - sold, 0) * (price - lot) : 0
+                                const profit = realized + openProfit
+                                return (
+                                  <tr key={a.id} className={isIn ? '' : 'opacity-50'}>
+                                    <td className="td">
+                                      <label className="flex items-center gap-2 cursor-pointer">
+                                        <input
+                                          type="checkbox"
+                                          className="w-4 h-4"
+                                          checked={isIn}
+                                          disabled={!user || busy}
+                                          onChange={(ev) =>
+                                            void guard(async () => {
+                                              await toggleEntry(ipo, a.id, ev.target.checked, user!.id)
+                                              // Dağıtım yapıldıysa iadeler de tazelenir —
+                                              // katılımdan çıkan hesabın eski iadesi bakiyede kalmasın
+                                              if (ipo.status !== 'talep_verildi') {
+                                                const iadeDate =
+                                                  ledger.find(
+                                                    (l) => l.ipo_id === ipo.id && l.kind === 'iade'
+                                                  )?.date ?? todayISO()
+                                                await settleDistribution(ipo, iadeDate)
+                                              }
+                                            }, true)
+                                          }
+                                        />
+                                        <span className="font-medium">{a.name}</span>
+                                      </label>
+                                    </td>
+                                    <td className="td text-right num whitespace-nowrap">
+                                      {req ? formatNumber(req, 0) : '—'}
+                                      <span className="text-muted mx-1">→</span>
+                                      {alloc ? formatNumber(alloc, 0) : '—'}
+                                    </td>
+                                    <td className="td text-right num">
+                                      {isIn && refund > 0 ? (
+                                        <span className="text-pos">{formatTRY(refund)}</span>
+                                      ) : (
+                                        <span className="text-muted">—</span>
+                                      )}
+                                    </td>
+                                    <td className="td text-right num text-xs">
+                                      {sold > 0 && soldPrice != null ? (
+                                        <span className="text-ink">
+                                          {formatNumber(sold, 0)} lot × {formatTRY(soldPrice)}
+                                          <span className="block text-muted">{e?.sold_date}</span>
+                                        </span>
+                                      ) : (
+                                        <span className="text-muted">—</span>
+                                      )}
+                                    </td>
+                                    <td
+                                      className={`td text-right num ${
+                                        profit >= 0 ? 'text-pos' : 'text-neg'
+                                      }`}
+                                    >
+                                      {alloc > 0 ? formatTRY(profit) : '—'}
+                                    </td>
+                                    <td className="td text-right whitespace-nowrap">
+                                      {isIn &&
+                                        alloc > 0 &&
+                                        (sold > 0 ? (
+                                          <button
+                                            className="btn-ghost text-xs"
+                                            onClick={() =>
+                                              void guard(() => unsellEntries(ipo, [e!.id]), true)
+                                            }
+                                          >
+                                            Satışı geri al
+                                          </button>
+                                        ) : (
+                                          <button
+                                            className="btn-ghost text-xs"
+                                            onClick={() => openSale(ipo, e!)}
+                                          >
+                                            Sat
+                                          </button>
+                                        ))}
+                                    </td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+
+                      <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted">
+                        <span>{s.accountCount} hesaptan katılım</span>
+                        <span>İstenen: {formatNumber(s.totalRequested, 0)} lot</span>
+                        <span>Düşen: {formatNumber(s.totalAllocated, 0)} lot</span>
+                        <span>Maliyet: {formatTRY(s.cost)}</span>
+                        {s.refund > 0 && (
+                          <span className="text-pos">İade: {formatTRY(s.refund)}</span>
+                        )}
+                        {s.proceeds > 0 && <span>Satış geliri: {formatTRY(s.proceeds)}</span>}
+                      </div>
+                      {joined.length === 0 && (
+                        <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                          Hiçbir hesap işaretli değil — katıldığın hesapların kutusunu işaretle,
+                          hesap başına {formatNumber(ipo.default_lot ?? 0, 0)} lot otomatik yazılır.
+                        </p>
+                      )}
+                    </div>
+                  </>
+                )
+              })()
+            )}
+          </Card>
+        </div>
       )}
 
       {/* ---------------------------------------------------- arz bazlı kâr */}
@@ -791,9 +1098,16 @@ export default function IpoPage() {
                   return (
                     <div key={e.id} className="flex items-center gap-2 px-3 py-2 text-sm">
                       <span className="flex-1">{acc?.name ?? '—'}</span>
-                      <span className="text-xs text-muted">istenen {formatNumber(e.requested_lot, 0)}</span>
+                      <label className="text-xs text-muted">istenen</label>
                       <input
-                        className="w-24 num text-right"
+                        className="w-20 num text-right"
+                        inputMode="decimal"
+                        value={reqMap[e.account_id] ?? ''}
+                        onChange={(ev) => setReqMap({ ...reqMap, [e.account_id]: ev.target.value })}
+                      />
+                      <label className="text-xs text-muted">düşen</label>
+                      <input
+                        className="w-20 num text-right"
                         inputMode="decimal"
                         disabled={parseAmount(equalLot) > 0}
                         value={allocMap[e.account_id] ?? ''}

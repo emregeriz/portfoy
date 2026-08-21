@@ -173,6 +173,15 @@ export function useIpos(userId?: string | null) {
 
   const removeIpo = useCallback(
     async (id: string) => {
+      // Ledger'daki iade/satış satırları FK "set null" olduğu için arzla
+      // birlikte silinmez — yanlış girilen arzın parası bakiyede kalmasın
+      // diye burada elle temizlenir. Transferler arza bağlı değildir, kalır.
+      const { error: ledErr } = await supabase
+        .from('account_ledger')
+        .delete()
+        .eq('ipo_id', id)
+        .in('kind', ['iade', 'satis'])
+      if (ledErr) throw new Error(ledErr.message)
       const { error } = await supabase.from('ipos').delete().eq('id', id)
       if (error) throw new Error(error.message)
       await load()

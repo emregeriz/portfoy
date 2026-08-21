@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import type { ReactNode } from 'react'
 
 export function PageHeader({
@@ -95,11 +96,24 @@ export function Modal({
   onClose: () => void
   children: ReactNode
 }) {
+  // Escape ile kapanır — form içindeyken de çalışır
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+
   if (!open) return null
   return (
     <div
       className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm grid place-items-center p-4"
       onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
     >
       <div
         className="w-full max-w-lg bg-surface border border-border rounded-xl shadow-2xl"
@@ -107,7 +121,11 @@ export function Modal({
       >
         <header className="flex items-center justify-between px-4 py-3 border-b border-border">
           <h3 className="font-semibold text-sm">{title}</h3>
-          <button onClick={onClose} className="text-muted hover:text-ink text-lg leading-none">
+          <button
+            onClick={onClose}
+            aria-label="Kapat"
+            className="text-muted hover:text-ink text-lg leading-none px-1"
+          >
             ×
           </button>
         </header>
