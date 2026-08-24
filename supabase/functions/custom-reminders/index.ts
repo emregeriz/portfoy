@@ -1,10 +1,15 @@
 // =====================================================================
-// custom-reminders — kullanıcının kendi yazdığı hatırlatmaları maille
+// custom-reminders — kullanıcının kendi yazdığı hatırlatmaları gönderir
 //
 // 15 dakikada bir çalışır; tarihi VE saati gelmiş aktif hatırlatmalar için
-// ayrı ayrı mail gönderir: başlık mailin konusu, açıklama gövdesi.
+// ayrı ayrı mesaj gönderir: başlık mesajın başlığı, açıklama gövdesi.
 // Saat çözünürlüğü cron aralığı kadardır — 14:30'a kurulan hatırlatma
 // 14:30-14:45 arasında gider.
+//
+// Kanal seçimi (bkz. supabase/whatsapp.sql):
+//   user_wa_keys'te numarası olan → WhatsApp (CallMeBot)
+//   olmayan                       → e-posta (Resend)
+// WhatsApp isteği hata verirse hatırlatma kaybolmasın diye mail'e düşülür.
 //
 // Gönderim sonrası:
 //   once    → hatırlatma pasife çekilir
@@ -27,6 +32,18 @@ interface Reminder {
   send_time: string
   repeat_mode: 'once' | 'monthly'
   last_sent_on: string | null
+}
+
+/** CallMeBot'ta apikey numaraya bağlıdır — ikisi birlikte anlam taşır. */
+interface WaKey {
+  phone: string
+  apikey: string
+}
+
+interface Channel {
+  to: string
+  key: string
+  wa: WaKey | null
 }
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e))
@@ -78,6 +95,64 @@ function buildHtml(r: Reminder): string {
   </div>`
 }
 
+/** WhatsApp HTML anlamaz; *kalın* ve _italik_ kendi işaretlemesidir. */
+function buildText(r: Reminder): string {
+  const parts = [`*${r.title}*`, `${trDay(r.next_date)} tarihli hatırlatma`]
+  if (r.body?.trim()) parts.push('', r.body.trim())
+  if (r.repeat_mode === 'monthly') {
+    parts.push('', `_Her ay tekrarlanıyor · sonraki: ${trDay(nextMonth(r.next_date))}_`)
+  }
+  return parts.join('\n')
+}
+
+/**
+ * CallMeBot ASCII dışına çıkan hiçbir karakteri kabul etmiyor: Türkçe harf
+ * içeren mesaj "invalid charecters" ile geri dönüyor, hiç gönderilmiyor.
+ * Metin bu yüzden gönderim anında sadeleştirilir — "Kira ödemesi" mesaja
+ * "Kira odemesi" olarak düşer. Satır sonu ve *kalın* işaretlemesi geçerli.
+ */
+const ASCII_MAP: Record<string, string> = {
+  'ç': 'c', 'Ç': 'C', 'ğ': 'g', 'Ğ': 'G', 'ı': 'i', 'İ': 'I',
+  'ö': 'o', 'Ö': 'O', 'ş': 's', 'Ş': 'S', 'ü': 'u', 'Ü': 'U',
+  '₺': 'TL', '€': 'EUR', '£': 'GBP',
+  '—': '-', '–': '-', '·': '-', '…': '...',
+  '’': "'", '‘': "'", '“': '"', '”': '"',
+}
+
+function toAscii(s: string): string {
+  return s
+    .replace(/[çÇğĞıİöÖşŞüÜ₺€£—–·…’‘“”]/g, (c) => ASCII_MAP[c] ?? c)
+    // kalan aksanlı latin harfler taban harfine iner: â → a, é → e
+    .normalize('NFD').replace(/\p{M}/gu, '')
+    // emoji, kontrol karakterleri ve geri kalan ASCII dışı her şey atılır
+    // (satır sonu korunur — WhatsApp'ta gerçek satır sonu oluyor)
+    .replace(/[^\x20-\x7E\n]/g, '')
+}
+
+/**
+ * CallMeBot'un ücretsiz WhatsApp ucu — resmi API değil, kişinin kendi
+ * numarasına gönderim yapar. Hatada da HTTP 200 dönebildiği için başarı
+ * yalnızca gövdedeki "queued" ifadesinden anlaşılır; emin olunamayan her
+ * durum hata sayılır ki çağıran mail'e düşebilsin.
+ */
+async function sendWhatsApp(wa: WaKey, text: string): Promise<void> {
+  const ascii = toAscii(text).trim()
+  if (!ascii) throw new Error('mesaj ASCII sadeleştirmesinden sonra boş kaldı')
+
+  const url =
+    'https://api.callmebot.com/whatsapp.php' +
+    `?phone=${encodeURIComponent(wa.phone)}` +
+    `&text=${encodeURIComponent(ascii)}` +
+    `&apikey=${encodeURIComponent(wa.apikey)}`
+
+  const res = await fetch(url)
+  const body = await res.text().catch(() => '')
+  if (!res.ok || !/queued/i.test(body)) {
+    const detail = body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200)
+    throw new Error(detail || `CallMeBot HTTP ${res.status}`)
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
 
@@ -115,11 +190,19 @@ Deno.serve(async (req: Request) => {
     })
   }
 
-  // Adres ve anahtar kullanıcı başına bir kez çözülsün
-  const cache = new Map<string, { to: string; key: string }>()
-  const mailerFor = async (userId: string): Promise<{ to: string; key: string }> => {
+  // Kanal kullanıcı başına bir kez çözülsün
+  const cache = new Map<string, Channel>()
+  const channelFor = async (userId: string): Promise<Channel> => {
     const hit = cache.get(userId)
     if (hit) return hit
+
+    // Numarası varsa asıl kanal WhatsApp. Tablo hiç kurulmamışsa sorgu
+    // hata verir, waRow null gelir ve mail yoluna devam edilir.
+    const { data: waRow } = await supabase
+      .from('user_wa_keys')
+      .select('phone, apikey')
+      .eq('user_id', userId)
+      .maybeSingle()
 
     const { data: profile } = await supabase
       .from('profiles')
@@ -141,7 +224,11 @@ Deno.serve(async (req: Request) => {
       .eq('user_id', userId)
       .maybeSingle()
 
-    const result = { to, key: keyRow?.resend_key ?? resendKey }
+    const result: Channel = {
+      to,
+      key: keyRow?.resend_key ?? resendKey,
+      wa: waRow?.phone && waRow?.apikey ? { phone: waRow.phone, apikey: waRow.apikey } : null,
+    }
     cache.set(userId, result)
     return result
   }
@@ -149,20 +236,36 @@ Deno.serve(async (req: Request) => {
   let sent = 0
   for (const r of rows) {
     try {
-      const { to, key } = await mailerFor(r.user_id)
-      if (!to) {
-        errors.push(`${r.title}: e-posta adresi bulunamadı`)
-        continue
-      }
-      if (!key) throw new Error('Resend anahtarı tanımlı değil')
+      const ch = await channelFor(r.user_id)
+      let via = ''
 
-      const res = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: sender, to: [to], subject: r.title, html: buildHtml(r) }),
-      })
-      const payload = await res.json().catch(() => null)
-      if (!res.ok) throw new Error(payload?.message ?? `Resend HTTP ${res.status}`)
+      if (ch.wa) {
+        try {
+          await sendWhatsApp(ch.wa, buildText(r))
+          via = `WhatsApp ${ch.wa.phone}`
+        } catch (e) {
+          // Hatırlatma kaybolmasın diye mail'e düşülür; hata yine raporlanır
+          errors.push(`${r.title}: WhatsApp gitmedi (${msg(e)}) — mail deneniyor`)
+        }
+      }
+
+      if (!via) {
+        const { to, key } = ch
+        if (!to) {
+          errors.push(`${r.title}: e-posta adresi bulunamadı`)
+          continue
+        }
+        if (!key) throw new Error('Resend anahtarı tanımlı değil')
+
+        const res = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from: sender, to: [to], subject: r.title, html: buildHtml(r) }),
+        })
+        const payload = await res.json().catch(() => null)
+        if (!res.ok) throw new Error(payload?.message ?? `Resend HTTP ${res.status}`)
+        via = to
+      }
 
       // Tekrarlıysa bir sonraki aya taşı, tek seferlikse kapat
       const patch =
@@ -173,7 +276,7 @@ Deno.serve(async (req: Request) => {
       if (updErr) errors.push(`${r.title} güncellenemedi: ${updErr.message}`)
 
       sent++
-      log.push(`${to} → ${r.title}`)
+      log.push(`${via} → ${r.title}`)
     } catch (e) {
       errors.push(`${r.title}: ${msg(e)}`)
     }

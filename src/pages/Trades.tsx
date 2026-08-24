@@ -14,6 +14,9 @@ import { Badge, Card, Empty, ErrorBox, Modal, PageHeader, Spinner } from '../com
 import { CURRENCIES, formatNumber, formatPercent, formatTRY, parseAmount } from '../lib/currency'
 import { todayISO } from '../lib/calc'
 import { computeHoldings, holdingTotals, DEFAULT_TAX_RATE } from '../lib/holdings'
+import { useCorporate } from '../hooks/useCorporate'
+import CorporatePanel from '../components/CorporatePanel'
+import FundBreakdown from '../components/FundBreakdown'
 import type { AssetKind, Currency, TradeSide, TradeWithRefs } from '../types/db'
 
 const KINDS: AssetKind[] = ['hisse', 'fon', 'doviz', 'altin', 'mevduat', 'kripto', 'diger']
@@ -39,6 +42,7 @@ export default function Trades() {
 
   const trades = useTrades(effectiveScope)
   const ipoData = useIpos(effectiveScope)
+  const corporate = useCorporate(effectiveScope)
 
   const [modal, setModal] = useState<TradeWithRefs | 'new' | null>(null)
   /** Pozisyonları hesap bazında ayır — aynı kâğıt iki kurumda ayrı satır olur */
@@ -92,8 +96,13 @@ export default function Trades() {
   }, [allRows, accountFilter])
 
   const holdings = useMemo(
-    () => computeHoldings(filteredTrades, bySymbol, { byAccount }),
-    [filteredTrades, bySymbol, byAccount]
+    () =>
+      computeHoldings(filteredTrades, bySymbol, {
+        byAccount,
+        actions: corporate.actions,
+        dividends: corporate.dividends,
+      }),
+    [filteredTrades, bySymbol, byAccount, corporate.actions, corporate.dividends]
   )
   const totals = useMemo(() => holdingTotals(holdings), [holdings])
   const openHoldings = useMemo(() => holdings.filter((h) => h.quantity > 0), [holdings])
@@ -382,9 +391,22 @@ export default function Trades() {
               {formatTRY(totals.netProfit)}
             </span>
           </div>
+          {totals.dividendNet !== 0 && (
+            <div>
+              <span className="text-xs text-muted">Temettüyle birlikte </span>
+              <span
+                className={`num text-lg font-semibold ${
+                  totals.totalReturn >= 0 ? 'text-pos' : 'text-neg'
+                }`}
+              >
+                {formatTRY(totals.totalReturn)}
+              </span>
+            </div>
+          )}
           <p className="text-xs text-muted">
             Gerçekleşen net {formatTRY(totals.realizedNet)} + açık pozisyon net{' '}
             {formatTRY(totals.unrealized - totals.potentialTax)}
+            {totals.dividendNet !== 0 && <> + net temettü {formatTRY(totals.dividendNet)}</>}
           </p>
         </div>
       </Card>
@@ -538,6 +560,17 @@ export default function Trades() {
           </table>
         )}
       </Card>
+
+      <FundBreakdown holdings={holdings} />
+
+      <CorporatePanel
+        userId={effectiveScope}
+        editable={isOwn}
+        accounts={accounts}
+        actions={corporate.actions}
+        dividends={corporate.dividends}
+        onChanged={() => void corporate.reload()}
+      />
 
       <Card title="İşlem geçmişi" className="p-0 overflow-x-auto">
         <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-border">

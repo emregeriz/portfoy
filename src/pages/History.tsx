@@ -7,7 +7,7 @@ import { useNetWorth, usePositions } from '../hooks/useSnapshots'
 import { supabase } from '../lib/supabase'
 import UserTabs from '../components/UserTabs'
 import { Badge, Card, Empty, ErrorBox, PageHeader, Spinner } from '../components/ui'
-import { formatNumber, formatTRY } from '../lib/currency'
+import { formatNumber, formatTRY, isMoneyMasked } from '../lib/currency'
 import { change } from '../lib/calc'
 import { KIND_LABELS } from '../lib/calc'
 
@@ -154,7 +154,9 @@ export default function History() {
                                       {p.quantity != null ? formatNumber(p.quantity, 4) : '—'}
                                     </td>
                                     <td className="td text-right num">
-                                      {formatNumber(p.amount)} {p.currency}
+                                      {/* Kendi para biriminde tutar — formatTRY'den geçmediği
+                                          için gizlemeyi burada elle uygulamak gerekiyor */}
+                                      {isMoneyMasked() ? '*****' : `${formatNumber(p.amount)} ${p.currency}`}
                                     </td>
                                     <td className="td text-right num">{formatTRY(p.amount_try)}</td>
                                     <td className="td text-muted">{p.note ?? ''}</td>

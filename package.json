@@ -12,7 +12,10 @@
     "check:prices": "node scripts/check-prices.mjs",
     "price:set": "node scripts/set-price.mjs",
     "reset:user": "node scripts/reset-user-data.mjs",
-    "test:nema": "node scripts/nema-test.mjs"
+    "test:nema": "node scripts/nema-test.mjs",
+    "seed:demo": "node scripts/seed-demo.mjs",
+    "icons": "node scripts/make-icons.mjs",
+    "backfill:fx": "node scripts/backfill-fx.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.1",

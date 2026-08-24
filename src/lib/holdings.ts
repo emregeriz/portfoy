@@ -54,6 +54,36 @@ export interface Holding {
   lastDate: string
   /** Satış adedi eldekini aştıysa true — veri girişinde eksik alım var demektir */
   oversold: boolean
+  /** Bu kâğıttan tahsil edilen brüt temettü */
+  dividendGross: number
+  /** Temettüden kesilen stopaj */
+  dividendTax: number
+  /** Cebe giren net temettü */
+  dividendNet: number
+  /** Bu kâğıda uygulanmış bedelsiz / bölünme sayısı */
+  actionCount: number
+}
+
+/** Bedelsiz, bölünme, birleşme — adedi ve birim maliyeti değiştiren olaylar */
+export interface CorporateAction {
+  asset_id: string
+  action_date: string
+  kind: 'bedelsiz' | 'bolunme' | 'birlesme'
+  /** Adet çarpanı: %100 bedelsiz → 2, 1 lot 5 lot olacaksa → 5 */
+  ratio: number
+  /** Sembol eşleştirmesi için — sorgu assets ile join edilerek doldurulur */
+  symbol?: string | null
+}
+
+/** Tahsil edilmiş temettü kaydı */
+export interface DividendRecord {
+  asset_id: string
+  account_id: string | null
+  pay_date: string
+  gross_amount: number
+  tax_amount: number
+  symbol?: string | null
+  account_name?: string | null
 }
 
 interface PriceLookup {
@@ -74,6 +104,10 @@ export interface HoldingOptions {
   taxRate?: number
   /** true ise her hesap ayrı pozisyon sayılır (aynı sembol iki satır olabilir) */
   byAccount?: boolean
+  /** Bedelsiz / bölünme kayıtları — sembol bazında uygulanır */
+  actions?: CorporateAction[]
+  /** Tahsil edilmiş temettüler */
+  dividends?: DividendRecord[]
 }
 
 export function computeHoldings(
@@ -81,7 +115,35 @@ export function computeHoldings(
   prices: PriceLookup,
   opts: HoldingOptions = {}
 ): Holding[] {
-  const { taxRate = DEFAULT_TAX_RATE, byAccount = false } = opts
+  const { taxRate = DEFAULT_TAX_RATE, byAccount = false, actions = [], dividends = [] } = opts
+
+  // Sembol → o kâğıda ait şirket işlemleri (tarihe göre sıralı)
+  const actionsBySymbol = new Map<string, CorporateAction[]>()
+  for (const a of actions) {
+    const sym = a.symbol?.trim().toUpperCase()
+    const ratio = Number(a.ratio)
+    if (!sym || !Number.isFinite(ratio) || ratio <= 0) continue
+    const list = actionsBySymbol.get(sym)
+    if (list) list.push(a)
+    else actionsBySymbol.set(sym, [a])
+  }
+  for (const list of actionsBySymbol.values()) {
+    list.sort((a, b) => a.action_date.localeCompare(b.action_date))
+  }
+
+  // Temettüler sembol → hesap kırılımında toplanır
+  const divBySymbol = new Map<string, Map<string, { gross: number; tax: number }>>()
+  for (const d of dividends) {
+    const sym = d.symbol?.trim().toUpperCase()
+    if (!sym) continue
+    const acc = byAccount ? (d.account_name ?? 'Belirtilmemiş') : ''
+    const inner = divBySymbol.get(sym) ?? new Map<string, { gross: number; tax: number }>()
+    const cur = inner.get(acc) ?? { gross: 0, tax: 0 }
+    cur.gross += Number(d.gross_amount ?? 0)
+    cur.tax += Number(d.tax_amount ?? 0)
+    inner.set(acc, cur)
+    divBySymbol.set(sym, inner)
+  }
 
   // Gruplama anahtarı: sembol, hesap bazlı istendiğinde sembol + hesap
   const groups = new Map<string, { symbol: string; account: string | null; rows: TradeWithRefs[] }>()
@@ -111,11 +173,33 @@ export function computeHoldings(
     let buyCount = 0
     let sellCount = 0
     let oversold = false
+    let actionCount = 0
+
+    /**
+     * Bedelsiz ve bölünme, işlemlerle aynı zaman çizelgesinde işlenir.
+     * Olay anında eldeki adet çarpanla çarpılır, TOPLAM MALİYET DEĞİŞMEZ —
+     * bedelsiz pay bedava gelir, birim maliyet kendiliğinden düşer. Geçmiş
+     * alışları geriye dönük yeniden yazmaya gerek kalmaz; olaydan sonraki
+     * alımlar da doğal olarak yeni fiyat düzeyinden girer.
+     */
+    const pending = [...(actionsBySymbol.get(symbol) ?? [])]
+    const applyActionsUntil = (date: string) => {
+      while (pending.length && pending[0].action_date <= date) {
+        const a = pending.shift()!
+        if (qty > 1e-9) {
+          qty *= Number(a.ratio)
+          actionCount++
+        }
+      }
+    }
 
     for (const t of sorted) {
       const tradeQty = Number(t.quantity)
       const tradeAmount = Number(t.amount_try ?? Number(t.amount) * Number(t.fx_rate ?? 1))
       if (!Number.isFinite(tradeQty) || tradeQty <= 0) continue
+
+      // İşlemden önceki tarihli olaylar önce uygulanır
+      applyActionsUntil(t.trade_date)
 
       if (t.side === 'alis') {
         qty += tradeQty
@@ -141,6 +225,13 @@ export function computeHoldings(
         }
       }
     }
+
+    // Son işlemden sonra gelen bedelsizler de sayılsın
+    applyActionsUntil('9999-12-31')
+
+    const div = divBySymbol.get(symbol)?.get(byAccount ? (account ?? 'Belirtilmemiş') : '')
+    const dividendGross = div?.gross ?? 0
+    const dividendTax = div?.tax ?? 0
 
     const avgCost = qty > 0 ? costBasis / qty : 0
     const latest = prices.get(symbol)
@@ -173,6 +264,10 @@ export function computeHoldings(
       firstDate: sorted[0].trade_date,
       lastDate: sorted[sorted.length - 1].trade_date,
       oversold,
+      dividendGross,
+      dividendTax,
+      dividendNet: dividendGross - dividendTax,
+      actionCount,
     })
   }
 
@@ -205,6 +300,18 @@ export interface HoldingTotals {
   totalTax: number
   /** Güncel fiyatı bulunamayan sembol sayısı */
   unpriced: number
+  /** Tahsil edilen brüt temettü */
+  dividendGross: number
+  /** Temettüden kesilen stopaj */
+  dividendTax: number
+  /** Cebe giren net temettü */
+  dividendNet: number
+  /**
+   * Toplam getiri: alım satım kârı + açık kâr + temettü, vergiler düşülmüş.
+   * netProfit'ten farkı temettüyü de içermesi — fiyat farkı tek başına
+   * hisse getirisini eksik anlatıyor.
+   */
+  totalReturn: number
 }
 
 export function holdingTotals(holdings: Holding[]): HoldingTotals {
@@ -214,9 +321,14 @@ export function holdingTotals(holdings: Holding[]): HoldingTotals {
   let realizedTax = 0
   let potentialTax = 0
   let unpriced = 0
+  let dividendGross = 0
+  let dividendTax = 0
   for (const h of holdings) {
     realized += h.realized
     realizedTax += h.realizedTax
+    // Temettü kapanmış pozisyonlarda da cepte kalır — adet şartı yok
+    dividendGross += h.dividendGross
+    dividendTax += h.dividendTax
     if (h.quantity <= 0) continue
     costBasis += h.costBasis
     // Fiyatı olmayan kalem maliyetiyle sayılır ki toplam değer düşük görünmesin
@@ -226,6 +338,8 @@ export function holdingTotals(holdings: Holding[]): HoldingTotals {
   }
   const unrealized = value - costBasis
   const realizedNet = realized - realizedTax
+  const dividendNet = dividendGross - dividendTax
+  const netProfit = realizedNet + (unrealized - potentialTax)
   return {
     costBasis,
     value,
@@ -235,9 +349,13 @@ export function holdingTotals(holdings: Holding[]): HoldingTotals {
     realizedNet,
     potentialTax,
     netValue: value - potentialTax,
-    netProfit: realizedNet + (unrealized - potentialTax),
+    netProfit,
     totalTax: realizedTax + potentialTax,
     unpriced,
+    dividendGross,
+    dividendTax,
+    dividendNet,
+    totalReturn: netProfit + dividendNet,
   }
 }
 
@@ -264,7 +382,8 @@ export function holdingsSeries(
   trades: TradeWithRefs[],
   prices: PriceLookup,
   todayISO: string,
-  taxRate = DEFAULT_TAX_RATE
+  taxRate = DEFAULT_TAX_RATE,
+  actions: CorporateAction[] = []
 ): ValuePoint[] {
   const sorted = [...trades]
     .filter((t) => t.assets?.symbol)
@@ -305,6 +424,19 @@ export function holdingsSeries(
     }
   }
 
+  // Bedelsiz / bölünme — tarihi gelen olay o güne kadarki adedi çarpar
+  const timeline = [...actions]
+    .filter((a) => a.symbol && Number(a.ratio) > 0)
+    .sort((a, b) => a.action_date.localeCompare(b.action_date))
+  const applyActionsUntil = (date: string) => {
+    while (timeline.length && timeline[0].action_date <= date) {
+      const a = timeline.shift()!
+      const sym = a.symbol!.trim().toUpperCase()
+      const q = qty.get(sym) ?? 0
+      if (q > 1e-9) qty.set(sym, q * Number(a.ratio))
+    }
+  }
+
   for (const t of sorted) {
     const sym = t.assets!.symbol.trim().toUpperCase()
     const rate = Number(t.fx_rate ?? 1)
@@ -312,6 +444,7 @@ export function holdingsSeries(
     const tradeAmount = Number(t.amount_try ?? Number(t.amount) * rate)
     if (!Number.isFinite(tradeQty) || tradeQty <= 0) continue
 
+    applyActionsUntil(t.trade_date)
     lastPrice.set(sym, Number(t.unit_price) * rate)
     kindOf.set(sym, (t.assets?.kind ?? 'diger') as AssetKind)
     const q = qty.get(sym) ?? 0
@@ -328,6 +461,9 @@ export function holdingsSeries(
     }
     snapshot(t.trade_date)
   }
+
+  // Son işlemden sonraki olaylar da uygulanmalı
+  applyActionsUntil(todayISO)
 
   // Bugünkü güncel fiyatlarla son nokta
   for (const [sym] of qty) {

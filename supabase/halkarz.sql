@@ -37,3 +37,32 @@ drop policy if exists read_all_authenticated on public.ipo_feed;
 create policy read_all_authenticated on public.ipo_feed
   for select to authenticated using (true);
 -- Yazma politikası bilerek yok: yalnızca service_role (Edge Function) yazar.
+
+-- =====================================================================
+-- Yeni arz WhatsApp bildirimi
+--
+-- notified_at: bildirim gönderildiği an damgalanır. Yalnızca TARİHİ BELLİ
+-- arzlar bildirilir — taslaklar ve "Hazırlanıyor..." / "Ertelendi"
+-- kayıtları damgasız bekler, tarihleri açıklandığı koşuda haber edilir.
+--
+-- Kolon eklenirken hâlihazırda tarihi belli olan kayıtlar damgalanır;
+-- yoksa ilk koşuda geçmişteki bütün arzlar "yeni" sayılıp tek seferde
+-- onlarca bildirim gider. Tarihsiz olanlar bilerek null bırakılır.
+--
+-- Mesaj user_wa_keys'teki her numaraya gider (bkz. whatsapp.sql).
+-- =====================================================================
+alter table public.ipo_feed
+  add column if not exists notified_at timestamptz;
+
+update public.ipo_feed
+set notified_at = now()
+where notified_at is null
+  and is_draft = false
+  and date_text ~ '[0-9]'
+  -- Ay adlari ASCII'ye dayanikli yazildi: '.' Turkce harfin yerini tutar,
+  -- boylece dosya kodlama bozan bir araci gecse de desen calisir.
+  and date_text ~* '(ocak|.ubat|mart|nisan|may.s|haziran|temmuz|a.ustos|eyl.l|ekim|kas.m|aral.k)';
+
+-- Kontrol: damgasız kalanlar (bunlar tarihi açıklanınca bildirilecek)
+--   select slug, date_text from public.ipo_feed
+--   where notified_at is null and is_draft = false;

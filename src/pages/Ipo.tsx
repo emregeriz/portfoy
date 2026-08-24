@@ -631,8 +631,17 @@ export default function IpoPage() {
                             <span className="text-xs text-muted shrink-0">{ipo.bist_code}</span>
                           )}
                         </div>
-                        <div className="mt-1">
+                        <div className="mt-1 flex items-center gap-1.5">
                           <Badge tone={meta.tone}>{meta.label}</Badge>
+                          {/* Arz takviminden otomatik açılanlar ayırt edilsin */}
+                          {ipo.source === 'takvim' && (
+                            <span
+                              className="text-[10px] text-muted"
+                              title="Arz takviminden otomatik eklendi — hesap ve lot bilgisini sen gireceksin"
+                            >
+                              takvimden
+                            </span>
+                          )}
                         </div>
                       </div>
                       <div className="text-right shrink-0">

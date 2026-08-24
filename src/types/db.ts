@@ -201,6 +201,10 @@ export interface IpoRow {
   bist_code: string | null
   ipo_date: string | null
   lot_price: number | null
+  /** Arz takviminden otomatik açıldıysa ipo_feed kaydının slug'ı */
+  feed_slug: string | null
+  /** manuel = elle girildi · takvim = fetch-halkarz otomatik açtı */
+  source: 'manuel' | 'takvim'
   /** Her hesaptan talep edilen lot — hesap işaretlenince bu yazılır */
   default_lot: number | null
   /** Borsada işlem görmeye başladığı gün */

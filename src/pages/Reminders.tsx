@@ -45,7 +45,7 @@ export default function RemindersPage() {
     const fd = new FormData(e.currentTarget)
     const title = String(fd.get('title') ?? '').trim()
     if (!title) {
-      setFormError('Başlık gerekli — mailin konusu bu olacak.')
+      setFormError('Başlık gerekli — mesajın konusu bu olacak.')
       return
     }
     const values = {
@@ -157,7 +157,7 @@ export default function RemindersPage() {
     <div className="space-y-5">
       <PageHeader
         title="Hatırlatıcılar"
-        subtitle="Tarihi gelince e-posta olarak gelir. Başlık mailin konusu, açıklama içeriği olur."
+        subtitle="Tarihi gelince WhatsApp'tan gelir (numara tanımlı değilse e-postayla). Başlık mesajın konusu, açıklama içeriği olur."
         actions={
           <>
             <button className="btn-ghost" onClick={sendNow} disabled={busy}>
@@ -191,7 +191,7 @@ export default function RemindersPage() {
         <form onSubmit={submit} className="space-y-3">
           {formError && <ErrorBox message={formError} />}
           <div>
-            <label className="label">Başlık — mailin konusu</label>
+            <label className="label">Başlık — mesajın konusu</label>
             <input
               name="title"
               className="w-full"
@@ -201,7 +201,7 @@ export default function RemindersPage() {
             />
           </div>
           <div>
-            <label className="label">Açıklama — mailin içeriği</label>
+            <label className="label">Açıklama — mesajın içeriği</label>
             <textarea
               name="body"
               className="w-full min-h-[90px]"
@@ -240,7 +240,7 @@ export default function RemindersPage() {
           <p className="text-xs text-muted">
             Tek seferlik hatırlatma gönderildikten sonra kapanır; her ay seçilirse bir sonraki
             ayın aynı gününe taşınır. Ayın 31'i gibi her ayda olmayan günler ay sonuna kırpılır.
-            Mail, seçtiğin saatten sonraki ilk kontrolde gider — en fazla 15 dakika gecikmeyle.
+            Mesaj, seçtiğin saatten sonraki ilk kontrolde gider — en fazla 15 dakika gecikmeyle.
           </p>
           <div className="flex justify-end gap-2">
             <button type="button" className="btn-ghost" onClick={() => setModal(null)}>Vazgeç</button>

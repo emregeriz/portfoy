@@ -3,6 +3,7 @@ import { format, parseISO } from 'date-fns'
 import { tr } from 'date-fns/locale'
 import { useAuth } from '../hooks/useAuth'
 import { useTodayReturn } from '../hooks/useTodayReturn'
+import { usePeriodReturn, PERIODS, PERIOD_LABEL, type ReturnPeriod } from '../hooks/usePeriodReturn'
 import { formatNumber, formatPercent, formatTRY } from '../lib/currency'
 import { todayISO } from '../lib/calc'
 
@@ -22,6 +23,10 @@ export default function TodayReturn() {
     useTodayReturn(user?.id)
   const [open, setOpen] = useState(false)
   const [showAllMovers, setShowAllMovers] = useState(false)
+  /** null = bugün; diğerleri haftalık/aylık/3 aylık/yıllık */
+  const [period, setPeriod] = useState<ReturnPeriod | null>(null)
+  const periodData = usePeriodReturn(user?.id)
+  const sel = period ? periodData.results?.[period] ?? null : null
 
   if (loading) {
     return (
@@ -31,8 +36,10 @@ export default function TodayReturn() {
     )
   }
 
-  const pos = total > 0.004
-  const neg = total < -0.004
+  // Rozet seçili dönemi gösterir; dönem seçilmediyse bugünü
+  const shown = sel ? sel.total : total
+  const pos = shown > 0.004
+  const neg = shown < -0.004
   const tone = pos
     ? 'text-pos border-pos/30 bg-pos/10'
     : neg
@@ -50,10 +57,18 @@ export default function TodayReturn() {
         aria-haspopup="menu"
         aria-expanded={open}
       >
-        <span className="opacity-70 font-medium hidden sm:inline">Bugün</span>
+        <span className="opacity-70 font-medium hidden sm:inline">
+          {period ? PERIOD_LABEL[period] : 'Bugün'}
+        </span>
         <span>
-          {pos ? '▲' : neg ? '▼' : '•'} {sign}
-          {formatTRY(Math.abs(total))}
+          {periodData.loading && period ? (
+            '…'
+          ) : (
+            <>
+              {pos ? '▲' : neg ? '▼' : '•'} {sign}
+              {formatTRY(Math.abs(shown))}
+            </>
+          )}
         </span>
       </button>
 
@@ -62,35 +77,98 @@ export default function TodayReturn() {
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
           <div className="absolute right-0 mt-2 z-20 w-72 rounded-lg border border-border bg-surface shadow-xl overflow-hidden">
             <div className="px-3 py-2 border-b border-border flex items-center justify-between gap-2">
-              <span className="text-sm font-medium text-ink">Bugünün getirisi</span>
+              <span className="text-sm font-medium text-ink">
+                {period ? `${PERIOD_LABEL[period]} getirisi` : 'Bugünün getirisi'}
+              </span>
               <button
                 className="text-xs text-muted hover:text-ink"
-                onClick={() => void reload()}
+                onClick={() => void (period ? periodData.reload() : reload())}
                 type="button"
               >
                 ↻
               </button>
             </div>
 
-            <div className="px-3 py-2 space-y-1.5 text-xs">
-              <Row label="Fon & hisse" value={priceDelta} />
-              {(ipoLots > 0 || ipoDelta !== 0) && (
-                <Row
-                  label={ipoLots > 0 ? `Halka arz (${formatNumber(ipoLots, 0)} lot)` : 'Halka arz'}
-                  value={ipoDelta}
-                />
-              )}
-              <Row label="Nema geliri" value={nema} />
-              <div className="flex justify-between gap-3 pt-1.5 border-t border-border font-semibold text-ink">
-                <span>Toplam</span>
-                <span className={`num ${pos ? 'text-pos' : neg ? 'text-neg' : ''}`}>
-                  {sign}
-                  {formatTRY(Math.abs(total))}
-                </span>
-              </div>
+            {/* Dönem seçici — hangi aralığın kârına bakılacağı */}
+            <div className="px-3 py-2 border-b border-border flex flex-wrap gap-1">
+              {([null, ...PERIODS] as (ReturnPeriod | null)[]).map((p) => (
+                <button
+                  key={p ?? 'gun'}
+                  type="button"
+                  onClick={() => setPeriod(p)}
+                  className={`px-2 py-0.5 rounded-full text-[11px] border transition-colors ${
+                    period === p
+                      ? 'border-accent/40 bg-accent/10 text-accent font-medium'
+                      : 'border-border text-muted hover:text-ink'
+                  }`}
+                >
+                  {p ? PERIOD_LABEL[p] : 'Bugün'}
+                </button>
+              ))}
             </div>
 
-            {movers.length > 0 && (
+            {period ? (
+              <div className="px-3 py-2 space-y-1.5 text-xs">
+                {periodData.loading ? (
+                  <div className="text-muted py-2 text-center">Hesaplanıyor…</div>
+                ) : !sel ? (
+                  <div className="text-muted py-2 text-center">Veri yok.</div>
+                ) : (
+                  <>
+                    <Row label="Fon & hisse" value={sel.priceDelta} />
+                    {sel.nema !== 0 && <Row label="Nema geliri" value={sel.nema} />}
+                    {sel.dividend !== 0 && <Row label="Temettü (net)" value={sel.dividend} />}
+                    <div className="flex justify-between gap-3 pt-1.5 border-t border-border font-semibold text-ink">
+                      <span>Toplam</span>
+                      <span className={`num ${pos ? 'text-pos' : neg ? 'text-neg' : ''}`}>
+                        {sign}
+                        {formatTRY(Math.abs(sel.total))}
+                        {sel.pct !== null && (
+                          <span className="text-muted font-normal"> ({formatPercent(sel.pct)})</span>
+                        )}
+                      </span>
+                    </div>
+                    {sel.realPct !== null && (
+                      <div className="flex justify-between gap-3 pt-1.5 border-t border-border">
+                        <span className="text-muted">
+                          Dolar bazında
+                          {sel.fxPct !== null && (
+                            <span className="opacity-70"> · kur {formatPercent(sel.fxPct)}</span>
+                          )}
+                        </span>
+                        <span
+                          className={`num ${
+                            sel.realPct > 0 ? 'text-pos' : sel.realPct < 0 ? 'text-neg' : 'text-muted'
+                          }`}
+                        >
+                          {formatPercent(sel.realPct)}
+                        </span>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            ) : (
+              <div className="px-3 py-2 space-y-1.5 text-xs">
+                <Row label="Fon & hisse" value={priceDelta} />
+                {(ipoLots > 0 || ipoDelta !== 0) && (
+                  <Row
+                    label={ipoLots > 0 ? `Halka arz (${formatNumber(ipoLots, 0)} lot)` : 'Halka arz'}
+                    value={ipoDelta}
+                  />
+                )}
+                <Row label="Nema geliri" value={nema} />
+                <div className="flex justify-between gap-3 pt-1.5 border-t border-border font-semibold text-ink">
+                  <span>Toplam</span>
+                  <span className={`num ${pos ? 'text-pos' : neg ? 'text-neg' : ''}`}>
+                    {sign}
+                    {formatTRY(Math.abs(total))}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {!period && movers.length > 0 && (
               <div className="px-3 py-2 border-t border-border space-y-1 max-h-72 overflow-y-auto">
                 <div className="text-[11px] uppercase tracking-wide text-muted">En çok oynayan</div>
                 {(showAllMovers ? movers : movers.slice(0, MOVERS_SHOWN)).map((m) => (
@@ -128,6 +206,15 @@ export default function TodayReturn() {
             )}
 
             <div className="px-3 py-2 border-t border-border text-[11px] text-muted space-y-1">
+              {period && sel && (
+                <div>
+                  {format(parseISO(sel.from), 'd MMMM yyyy', { locale: tr })} → bugün. Araya konan
+                  para kâr sayılmaz: dönem içi alımlar maliyete, satışlar gelire yazılır.
+                  {sel.unmeasured > 0 && ` ${sel.unmeasured} kalem ölçülemedi — dönem başı fiyatı yok.`}
+                </div>
+              )}
+              {period && periodData.error && <div className="text-neg">{periodData.error}</div>}
+              {!period && (
               <div>
                 {priceDate ? (
                   <>
@@ -138,7 +225,8 @@ export default function TodayReturn() {
                   'Fiyat geçmişi yok; yalnızca nema sayıldı.'
                 )}
               </div>
-              {unmeasured > 0 && (
+              )}
+              {!period && unmeasured > 0 && (
                 <div>
                   {unmeasured} kalem sayılamadı — önceki gün fiyatı yok. Fiyat geçmişi biriktikçe
                   (Dashboard → ↻ Fiyatları güncelle) kendiliğinden girer.

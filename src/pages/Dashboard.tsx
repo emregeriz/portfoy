@@ -9,6 +9,7 @@ import { useIpos } from '../hooks/useIpos'
 import { ipoVirtualTrades } from '../lib/ipoTrades'
 import { useCash } from '../hooks/useCash'
 import { useTable } from '../hooks/useTable'
+import { useCorporate } from '../hooks/useCorporate'
 import { TRADE_SELECT } from '../hooks/useTrades'
 import type { AssetKind, Liability, TradeWithRefs } from '../types/db'
 import UserTabs from '../components/UserTabs'
@@ -112,11 +113,23 @@ export default function Dashboard() {
     [positions, tradedAssetIds]
   )
 
-  const holdings = useMemo(() => computeHoldings(allTrades, bySymbol), [allTrades, bySymbol])
+  // Bedelsiz/bölünme ve temettü Alım/Satım sayfasıyla aynı şekilde işlenmeli,
+  // yoksa iki sayfa farklı adet ve farklı kâr gösterir
+  // "toplam" sekmesi bir kullanıcı değil; sorgu UUID beklediği için boş geçilir
+  const corporate = useCorporate(isTotal ? null : effectiveScope)
+
+  const holdings = useMemo(
+    () =>
+      computeHoldings(allTrades, bySymbol, {
+        actions: corporate.actions,
+        dividends: corporate.dividends,
+      }),
+    [allTrades, bySymbol, corporate.actions, corporate.dividends]
+  )
   const tradeTotals = useMemo(() => holdingTotals(holdings), [holdings])
   const tradeSeries = useMemo(
-    () => holdingsSeries(allTrades, bySymbol, todayISO()),
-    [allTrades, bySymbol]
+    () => holdingsSeries(allTrades, bySymbol, todayISO(), undefined, corporate.actions),
+    [allTrades, bySymbol, corporate.actions]
   )
 
   /** Snapshot kalemleri + alım/satım pozisyonları tek dağılımda */

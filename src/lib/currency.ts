@@ -19,13 +19,39 @@ const numFmt = new Intl.NumberFormat('tr-TR', {
   maximumFractionDigits: 2,
 })
 
-/** ₺1.234.567,89 */
+// --------------------------------------------------------------------
+// Bakiye gizleme
+//
+// Tutar biçimlendirmesi uygulamada 200'den fazla yerde çağrılıyor; hepsine
+// ayrı ayrı bayrak taşımak yerine kapı buraya kondu. Bayrağı App bileşeni
+// her render'da yazar (useMask), böylece alt ağaç render olmadan önce
+// güncel değer hazır olur.
+//
+// Yalnızca TL tutarları maskelenir. Adet, birim fiyat ve yüzde açıkta
+// kalır: bunlar piyasa verisi ya da oran, bakiye değil.
+// --------------------------------------------------------------------
+let moneyMasked = false
+
+export function setMoneyMasked(value: boolean): void {
+  moneyMasked = value
+}
+
+export function isMoneyMasked(): boolean {
+  return moneyMasked
+}
+
+const MASK = '₺*****'
+const MASK_COMPACT = '₺***'
+
+/** ₺1.234.567,89 — gizleme açıkken ₺***** */
 export function formatTRY(value: number | null | undefined): string {
+  if (moneyMasked) return MASK
   return tryFmt.format(Number(value ?? 0))
 }
 
 /** ₺1,2 Mn — grafik eksenleri için */
 export function formatCompactTRY(value: number | null | undefined): string {
+  if (moneyMasked) return MASK_COMPACT
   return '₺' + compactFmt.format(Number(value ?? 0))
 }
 

@@ -151,3 +151,26 @@ select cron.schedule(
   );
   $cron$
 );
+
+-- ---------------------------------------------------------------- 7
+-- Fon içeriği — pazartesi 07:00 TR (04:00 UTC)
+--
+-- TEFAS fon dağılımını ay bazında yayımlıyor; haftada bir bakmak fazlasıyla
+-- yeterli. Önce supabase/borsa-ek.sql çalıştırılmış ve fetch-fund-breakdown
+-- deploy edilmiş olmalı.
+select cron.schedule(
+  'fetch-fund-breakdown-weekly',
+  '0 4 * * 1',
+  $cron$
+  select net.http_post(
+    url     := 'https://wihfycgxdvazhgnnprhz.supabase.co/functions/v1/fetch-fund-breakdown',
+    headers := jsonb_build_object(
+      'Content-Type',  'application/json',
+      'Authorization', 'Bearer ' || (
+        select decrypted_secret from vault.decrypted_secrets where name = 'service_role_key'
+      )
+    ),
+    body    := '{}'::jsonb
+  );
+  $cron$
+);

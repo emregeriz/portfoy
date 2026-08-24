@@ -2,6 +2,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 import { useAuth } from '../hooks/useAuth'
 import { useTheme } from '../hooks/useTheme'
+import { useMask } from '../hooks/useMask'
 import TodayReturn from './TodayReturn'
 
 /**
@@ -22,6 +23,7 @@ const NAV = [
 export default function Layout() {
   const { profile, user, signOut } = useAuth()
   const { theme, toggle } = useTheme()
+  const { masked, toggle: toggleMask } = useMask()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -114,6 +116,15 @@ export default function Layout() {
               )}
             </div>
 
+            <button
+              onClick={toggleMask}
+              className={`btn-ghost text-xs ${masked ? 'text-accent' : ''}`}
+              aria-label="Bakiyeleri gizle"
+              aria-pressed={masked}
+              title={masked ? 'Bakiyeleri göster' : 'Bakiyeleri gizle'}
+            >
+              {masked ? '🙈' : '👁️'}
+            </button>
             <button
               onClick={toggle}
               className="btn-ghost text-xs"

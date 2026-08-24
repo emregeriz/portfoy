@@ -10,6 +10,9 @@
 // Ana listeyi her koşuda tarar (tek istek); detay sayfalarını sıraya
 // koyup azar azar çeker — siteye nazik davranır. Cron günde birkaç kez
 // çağırır (cron.sql), arayüzdeki "Yenile" düğmesi de aynı işi yapar.
+//
+// Koşu sonunda tarihi açıklanmış yeni arzlar için WhatsApp bildirimi
+// gönderilir (bkz. halkarz.sql → notified_at).
 // =====================================================================
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 
@@ -20,6 +23,9 @@ const CORS = {
 
 const BASE = 'https://halkarz.com'
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) portfoy-kisisel-takip'
+
+/** Tek mesajda en fazla kaç arz sayılsın — gerisi "+N tane daha" olur */
+const BILDIRIM_LIMIT = 10
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -151,6 +157,122 @@ async function get(url: string): Promise<string> {
   return await r.text()
 }
 
+// =====================================================================
+// Yeni arz bildirimi
+//
+// Aşağıdaki iki yardımcı custom-reminders'takinin aynısı. Edge Function'lar
+// bu projede kendi kendine yeter halde duruyor (nextMonth, msg, CORS de
+// öyle), ortak dosya açmak yerine kopya bırakıldı.
+// =====================================================================
+
+/** CallMeBot'ta apikey numaraya bağlıdır — ikisi birlikte anlam taşır. */
+interface WaKey {
+  phone: string
+  apikey: string
+}
+
+/**
+ * CallMeBot ASCII dışına çıkan hiçbir karakteri kabul etmiyor: Türkçe harf
+ * içeren mesaj "invalid charecters" ile geri dönüyor, hiç gönderilmiyor.
+ * Şirket adları Türkçe harf dolu olduğu için bu sadeleştirme şart.
+ */
+const ASCII_MAP: Record<string, string> = {
+  'ç': 'c', 'Ç': 'C', 'ğ': 'g', 'Ğ': 'G', 'ı': 'i', 'İ': 'I',
+  'ö': 'o', 'Ö': 'O', 'ş': 's', 'Ş': 'S', 'ü': 'u', 'Ü': 'U',
+  '₺': 'TL', '€': 'EUR', '£': 'GBP',
+  '—': '-', '–': '-', '·': '-', '…': '...',
+  '’': "'", '‘': "'", '“': '"', '”': '"',
+}
+
+function toAscii(s: string): string {
+  return s
+    .replace(/[çÇğĞıİöÖşŞüÜ₺€£—–·…’‘“”]/g, (c) => ASCII_MAP[c] ?? c)
+    .normalize('NFD').replace(/\p{M}/gu, '')
+    .replace(/[^\x20-\x7E\n]/g, '')
+}
+
+/** Hatada da HTTP 200 dönebildiği için başarı "queued" ifadesinden anlaşılır. */
+async function sendWhatsApp(wa: WaKey, text: string): Promise<void> {
+  const ascii = toAscii(text).trim()
+  if (!ascii) throw new Error('mesaj ASCII sadeleştirmesinden sonra boş kaldı')
+
+  const url =
+    'https://api.callmebot.com/whatsapp.php' +
+    `?phone=${encodeURIComponent(wa.phone)}` +
+    `&text=${encodeURIComponent(ascii)}` +
+    `&apikey=${encodeURIComponent(wa.apikey)}`
+
+  const res = await fetch(url)
+  const body = await res.text().catch(() => '')
+  if (!res.ok || !/queued/i.test(body)) {
+    const detail = body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200)
+    throw new Error(detail || `CallMeBot HTTP ${res.status}`)
+  }
+}
+
+interface IpoRow {
+  slug: string
+  name: string
+  bist_code: string | null
+  date_text: string | null
+  price_text: string | null
+}
+
+const AYLAR: Record<string, number> = {
+  ocak: 1, şubat: 2, subat: 2, mart: 3, nisan: 4, mayıs: 5, mayis: 5, haziran: 6,
+  temmuz: 7, ağustos: 8, agustos: 8, eylül: 9, eylul: 9, ekim: 10, kasım: 11, kasim: 11, aralık: 12, aralik: 12,
+}
+
+/**
+ * "12-13-14 Ağustos 2026" → 2026-08-12 (talep toplamanın ilk günü).
+ * "30 Haziran, 1 Temmuz 2026" gibi ay atlayan yazımlarda da ilk gün alınır.
+ * Ay ya da yıl okunamazsa null döner — uydurma tarih yazmaktansa boş kalsın.
+ */
+function parseIpoDate(text: string | null): string | null {
+  if (!text) return null
+  const gun = text.match(/\d{1,2}/)
+  const yil = text.match(/\b(20\d{2})\b/)
+  const ay = text.toLowerCase().match(/(ocak|şubat|subat|mart|nisan|mayıs|mayis|haziran|temmuz|ağustos|agustos|eylül|eylul|ekim|kasım|kasim|aralık|aralik)/)
+  if (!gun || !yil || !ay) return null
+  const d = Number(gun[0])
+  const m = AYLAR[ay[1]]
+  if (!(d >= 1 && d <= 31) || !m) return null
+  return `${yil[1]}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+}
+
+/** "73,70 TL" → 73.7 */
+function parsePrice(text: string | null): number | null {
+  if (!text) return null
+  const m = text.replace(/\./g, '').match(/(\d+(?:,\d+)?)/)
+  if (!m) return null
+  const n = Number(m[1].replace(',', '.'))
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/**
+ * Tarihi belli mi? Sitede tarih alanı üç halde olabiliyor: gerçek tarih
+ * ("12-13-14 Ağustos 2026"), "Hazırlanıyor..." ya da "Ertelendi". Ay adı
+ * aramak, ikinci ikisini dışarıda bırakmanın en dayanıklı yolu — yeni bir
+ * bekleme ifadesi çıksa da yanlışlıkla bildirim gitmez.
+ */
+const AY_ADI =
+  /(ocak|şubat|mart|nisan|mayıs|haziran|temmuz|ağustos|eylül|ekim|kasım|aralık)/iu
+
+const tarihiBelli = (s: string | null): boolean => !!s && /\d/.test(s) && AY_ADI.test(s)
+
+function buildIpoText(rows: IpoRow[]): string {
+  const bas = rows.length === 1 ? '*Yeni halka arz*' : `*${rows.length} yeni halka arz*`
+  const goster = rows.slice(0, BILDIRIM_LIMIT)
+  const blok = goster.map((r) => {
+    const kod = r.bist_code ? `${r.bist_code} - ` : ''
+    const fiyat = r.price_text ? ` - ${r.price_text}` : ''
+    return `${kod}${r.name}\n${r.date_text}${fiyat}`
+  })
+  const kalan = rows.length - goster.length
+  if (kalan > 0) blok.push(`_+${kalan} arz daha_`)
+  return [bas, ...blok].join('\n\n')
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
 
@@ -221,8 +343,94 @@ Deno.serve(async (req: Request) => {
     await new Promise((r) => setTimeout(r, 400))
   }
 
+  // -------------------------------------------------- yeni arz bildirimi
+  // Damgasız (notified_at null) ve tarihi açıklanmış arzlar haber edilir.
+  // Taslaklar ile "Hazırlanıyor..." kayıtları damgasız bekler; tarihleri
+  // belli olduğu koşuda bildirime girerler. Detay çekimi bu adımdan önce
+  // bittiği için fiyat da çoğu zaman hazır olur.
+  let notified = 0
+  let opened = 0
+  try {
+    const { data: bekleyen, error: selErr } = await supabase
+      .from('ipo_feed')
+      .select('slug, name, bist_code, date_text, price_text')
+      .is('notified_at', null)
+      .eq('is_draft', false)
+      .order('sort_order')
+    if (selErr) throw new Error(selErr.message)
+
+    const yeni = ((bekleyen ?? []) as IpoRow[]).filter((r) => tarihiBelli(r.date_text))
+    if (yeni.length) {
+      const { data: alicilar } = await supabase.from('user_wa_keys').select('phone, apikey')
+      const kime = (alicilar ?? []) as WaKey[]
+      const metin = buildIpoText(yeni)
+
+      let ulasan = 0
+      for (const a of kime) {
+        try {
+          await sendWhatsApp(a, metin)
+          ulasan++
+        } catch (e) {
+          errors.push(`WhatsApp ${a.phone}: ${msg(e)}`)
+        }
+      }
+
+      // ------------------------------------------- arzları hesaba düşür
+      // Halka arz hesabı olan her kullanıcının listesine otomatik açılır;
+      // kullanıcı sonra yalnızca hangi hesaptan kaç lot istediğini girer.
+      // feed_slug üzerindeki tekil indeks aynı arzın iki kez açılmasını
+      // engelliyor, o yüzden ignoreDuplicates yeterli.
+      try {
+        const { data: ipoAccounts } = await supabase
+          .from('accounts')
+          .select('user_id')
+          .eq('is_ipo', true)
+          .eq('is_active', true)
+
+        const users = [...new Set(((ipoAccounts ?? []) as { user_id: string }[]).map((a) => a.user_id))]
+        if (users.length) {
+          const rows = users.flatMap((uid) =>
+            yeni.map((r) => ({
+              user_id: uid,
+              feed_slug: r.slug,
+              source: 'takvim',
+              name: r.name,
+              bist_code: r.bist_code,
+              ipo_date: parseIpoDate(r.date_text),
+              lot_price: parsePrice(r.price_text),
+              status: 'talep_verildi',
+            }))
+          )
+          const { error: ipoErr } = await supabase
+            .from('ipos')
+            .upsert(rows, { onConflict: 'user_id,feed_slug', ignoreDuplicates: true })
+          if (ipoErr) errors.push('arz açma: ' + ipoErr.message)
+          else opened = rows.length
+        }
+      } catch (e) {
+        errors.push('arz açma: ' + msg(e))
+      }
+
+      // Kimseye ulaşılamadıysa damgalama — haber kaybolmasın, sonraki
+      // koşuda tekrar denensin. Hiç alıcı tanımlı değilse damgala ki
+      // ileride numara eklendiğinde birikmiş arzlar toplu gitmesin.
+      if (ulasan > 0 || kime.length === 0) {
+        const { error: updErr } = await supabase
+          .from('ipo_feed')
+          .update({ notified_at: new Date().toISOString() })
+          .in('slug', yeni.map((r) => r.slug))
+        if (updErr) errors.push('damgalama: ' + updErr.message)
+        else notified = yeni.length
+      }
+    }
+  } catch (e) {
+    errors.push('bildirim: ' + msg(e))
+  }
+
   return new Response(
-    JSON.stringify({ ok: errors.length === 0, list: items.length, details: fetched, errors }),
+    JSON.stringify({
+      ok: errors.length === 0, list: items.length, details: fetched, notified, opened, errors,
+    }),
     { headers: { ...CORS, 'Content-Type': 'application/json' } }
   )
 })
