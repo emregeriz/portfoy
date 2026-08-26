@@ -17,6 +17,7 @@ const NAV = [
   { key: 'accounts', to: '/accounts', label: 'Hesaplar' },
   { key: 'nakit', to: '/nakit', label: 'Nakit' },
   { key: 'ipo', to: '/ipo', label: 'Halka Arz' },
+  { key: 'gunluk', to: '/gunluk', label: 'Günlük Kâr' },
   { key: 'transactions', to: '/transactions', label: 'Gelir / Gider' },
 ]
 

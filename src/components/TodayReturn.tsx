@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { format, parseISO } from 'date-fns'
 import { tr } from 'date-fns/locale'
 import { useAuth } from '../hooks/useAuth'
@@ -11,22 +12,39 @@ import { todayISO } from '../lib/calc'
  * Üst çubuktaki "bugünün getirisi" rozeti.
  *
  * Kâr varsa yeşil, zarar varsa kırmızı yanar; tutar rozetin üzerinde yazar.
- * Tıklayınca kırılım açılır: fon/hisse fiyat hareketi, halka arz hisselerinin
- * değişimi, nema geliri ve en çok oynayan kalemler.
+ * Tıklayınca kırılım açılır: fon/hisse fiyat hareketi, halka arz, nema,
+ * temettü ve o gün gerçekleşen satışlar. Satışlar hesap hesap listelenir —
+ * aynı kâğıdı farklı hesaplardan farklı fiyata satmış olabilirsin, kazanç
+ * her hesabın kendi fiyatından ölçülür.
  */
 /** Kırılımda başta görünen kalem sayısı — gerisi "daha fazla göster" ile açılır */
 const MOVERS_SHOWN = 10
 
 export default function TodayReturn() {
   const { user } = useAuth()
-  const { total, priceDelta, ipoDelta, nema, ipoLots, priceDate, movers, unmeasured, loading, error, reload } =
-    useTodayReturn(user?.id)
+  const {
+    total,
+    priceDelta,
+    ipoDelta,
+    nema,
+    dividend,
+    ipoLots,
+    priceDate,
+    movers,
+    items,
+    hasPricesToday,
+    lastPriceDay,
+    unmeasured,
+    loading,
+    error,
+    reload,
+  } = useTodayReturn(user?.id)
   const [open, setOpen] = useState(false)
   const [showAllMovers, setShowAllMovers] = useState(false)
   /** null = bugün; diğerleri haftalık/aylık/3 aylık/yıllık */
   const [period, setPeriod] = useState<ReturnPeriod | null>(null)
   const periodData = usePeriodReturn(user?.id)
-  const sel = period ? periodData.results?.[period] ?? null : null
+  const sel = period ? (periodData.results?.[period] ?? null) : null
 
   if (loading) {
     return (
@@ -47,6 +65,8 @@ export default function TodayReturn() {
       : 'text-muted border-border bg-surface2'
   const sign = pos ? '+' : neg ? '−' : ''
   const stale = priceDate && priceDate !== todayISO()
+  /** O gün gerçekleşen satışlar — kazancın nereden geldiğinin en net cevabı */
+  const sales = items.filter((i) => i.part === 'satis')
 
   return (
     <div className="relative">
@@ -75,7 +95,7 @@ export default function TodayReturn() {
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 mt-2 z-20 w-72 rounded-lg border border-border bg-surface shadow-xl overflow-hidden">
+          <div className="absolute right-0 mt-2 z-20 w-80 rounded-lg border border-border bg-surface shadow-xl overflow-hidden">
             <div className="px-3 py-2 border-b border-border flex items-center justify-between gap-2">
               <span className="text-sm font-medium text-ink">
                 {period ? `${PERIOD_LABEL[period]} getirisi` : 'Bugünün getirisi'}
@@ -158,6 +178,7 @@ export default function TodayReturn() {
                   />
                 )}
                 <Row label="Nema geliri" value={nema} />
+                {dividend !== 0 && <Row label="Temettü (net)" value={dividend} />}
                 <div className="flex justify-between gap-3 pt-1.5 border-t border-border font-semibold text-ink">
                   <span>Toplam</span>
                   <span className={`num ${pos ? 'text-pos' : neg ? 'text-neg' : ''}`}>
@@ -165,6 +186,42 @@ export default function TodayReturn() {
                     {formatTRY(Math.abs(total))}
                   </span>
                 </div>
+              </div>
+            )}
+
+            {!period && sales.length > 0 && (
+              <div className="px-3 py-2 border-t border-border space-y-1.5 max-h-56 overflow-y-auto">
+                <div className="text-[11px] uppercase tracking-wide text-muted">
+                  Bugün satılanlar
+                </div>
+                {sales.map((s) => (
+                  <div key={s.key} className="flex justify-between gap-3 text-xs">
+                    <span className="text-ink min-w-0">
+                      {s.symbol}
+                      {s.account && <span className="text-muted"> · {s.account}</span>}
+                      <span className="block text-[11px] text-muted num">
+                        {formatNumber(s.qty, 0)} × {formatNumber(s.to)}
+                        {s.from != null && (
+                          <>
+                            {' '}
+                            ← {formatNumber(s.from)}
+                            <span className="ml-1 opacity-70">
+                              {s.sameDay
+                                ? 'alış'
+                                : s.vsIpoPrice
+                                  ? 'arz fiyatı'
+                                  : 'önceki kapanış'}
+                            </span>
+                          </>
+                        )}
+                      </span>
+                    </span>
+                    <span className={`num shrink-0 ${s.delta >= 0 ? 'text-pos' : 'text-neg'}`}>
+                      {s.delta >= 0 ? '+' : '−'}
+                      {formatTRY(Math.abs(s.delta))}
+                    </span>
+                  </div>
+                ))}
               </div>
             )}
 
@@ -176,8 +233,11 @@ export default function TodayReturn() {
                     <span className="text-ink">
                       {m.symbol}
                       {m.source === 'ipo' && <span className="ml-1 text-muted">arz</span>}
-                      {m.firstDay && (
-                        <span className="ml-1 text-muted" title="İlk işlem günü — halka arz fiyatına göre">
+                      {m.vsIpoPrice && (
+                        <span
+                          className="ml-1 text-muted"
+                          title="İlk işlem günü — halka arz fiyatına göre"
+                        >
                           ilk gün
                         </span>
                       )}
@@ -185,9 +245,7 @@ export default function TodayReturn() {
                     <span className={`num ${m.delta >= 0 ? 'text-pos' : 'text-neg'}`}>
                       {m.delta >= 0 ? '+' : '−'}
                       {formatTRY(Math.abs(m.delta))}
-                      {m.pct !== null && (
-                        <span className="text-muted"> ({formatPercent(m.pct)})</span>
-                      )}
+                      {m.pct !== null && <span className="text-muted"> ({formatPercent(m.pct)})</span>}
                     </span>
                   </div>
                 ))}
@@ -215,16 +273,29 @@ export default function TodayReturn() {
               )}
               {period && periodData.error && <div className="text-neg">{periodData.error}</div>}
               {!period && (
-              <div>
-                {priceDate ? (
-                  <>
-                    Fiyatlar: {format(parseISO(priceDate), 'd MMMM yyyy', { locale: tr })}
-                    {stale && ' — bugün yeni fiyat gelmedi, son iki fiyat günü karşılaştırıldı.'}
-                  </>
-                ) : (
-                  'Fiyat geçmişi yok; yalnızca nema sayıldı.'
-                )}
-              </div>
+                <div>
+                  {!hasPricesToday ? (
+                    <>
+                      Bugün için fiyat gelmedi — fiyatlar hafta içi 10:00 ve 19:00'da güncellenir.
+                      {lastPriceDay && (
+                        <>
+                          {' '}
+                          Son fiyat günü{' '}
+                          {format(parseISO(lastPriceDay.date), 'd MMMM', { locale: tr })}:{' '}
+                          {lastPriceDay.total >= 0 ? '+' : '−'}
+                          {formatTRY(Math.abs(lastPriceDay.total))}.
+                        </>
+                      )}
+                    </>
+                  ) : priceDate ? (
+                    <>
+                      Fiyatlar: {format(parseISO(priceDate), 'd MMMM yyyy', { locale: tr })}
+                      {stale && ' — bugünden eski.'}
+                    </>
+                  ) : (
+                    'Fiyat geçmişi yok; yalnızca nakit gelirler sayıldı.'
+                  )}
+                </div>
               )}
               {!period && unmeasured > 0 && (
                 <div>
@@ -233,6 +304,13 @@ export default function TodayReturn() {
                 </div>
               )}
               {error && <div className="text-neg">{error}</div>}
+              <Link
+                to="/gunluk"
+                onClick={() => setOpen(false)}
+                className="block pt-1 text-accent hover:underline"
+              >
+                Günlük kâr defteri →
+              </Link>
             </div>
           </div>
         </>
@@ -241,7 +319,9 @@ export default function TodayReturn() {
   )
 }
 
-function Row({ label, value }: { label: string; value: number }) {
+function Row({ label, value: raw }: { label: string; value: number }) {
+  // Kuruşun altındaki artık "−₺0,00" diye görünmesin
+  const value = Math.abs(raw) < 0.005 ? 0 : raw
   return (
     <div className="flex justify-between gap-3">
       <span className="text-muted">{label}</span>

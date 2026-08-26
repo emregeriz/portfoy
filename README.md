@@ -118,17 +118,55 @@ Matematiği `npm run test:nema` ile doğrulayabilirsin.
 ### Bugünün getirisi
 
 Üst çubuğun sağındaki rozet, o günkü kazancı gösterir — kârda yeşil, zararda
-kırmızı. Üç kalemin toplamıdır:
+kırmızı. Hesabın tamamı tek yerde: `src/lib/dailyReturn.ts`. Günlük Kâr sayfası
+da aynı motordan beslenir, iki ekran hiçbir zaman farklı sayı göstermez.
 
-| Kalem | Hesap |
+Bir günün kazancı üç parçaya ayrılır:
+
+| Parça | Hesap |
 |---|---|
-| Fon & hisse | adet × (son fiyat − önceki fiyat); adetler alım/satım defteri + son snapshot |
-| Halka arz | elde tutulan lot (düşen − satılan) × fiyat farkı; bütün hesaplar toplanır, tek satır olarak görünür. **İlk işlem gününde** önceki kapanış olmadığı için referans halka arz fiyatıdır — para o güne dek orada bağlıydı. Fiyatı elle girilen arzlar (`manual_price`) günlük değişim üretmez |
-| Nema geliri | o gün hesaplara işleyen faiz |
+| Gün boyu elde tutulan pay | adet × (o günün kapanışı − önceki kapanış) |
+| **O gün satılan pay** | adet × (gerçekleşen **satış fiyatı** − önceki kapanış) |
+| O gün alınan pay | adet × (o günün kapanışı − kendi alış fiyatı) |
 
-Tıklayınca kırılım ve en çok oynayan kalemler açılır. Fiyatın yayınlanmadığı
-günlerde sembolün son iki fiyat günü karşılaştırılır; hangi güne ait olduğu
-rozetin altında yazar.
+Satış parçası işin can alıcı yeri: bir kâğıdı sattıysan o günkü kazancının gün
+sonu fiyatıyla ilgisi kalmaz — para hangi fiyattan çıktıysa kazanç odur. Halka
+arzda her hesap ayrı fiyattan satılabildiği için satışlar **hesap hesap** ayrı
+kalem tutulur:
+
+```
+CITAS · Nalin    32 lot   107,80 → 103,00    −153,60
+CITAS · Yusuf    32 lot   107,80 → 105,00     −89,60
+CITAS · Yaren    32 lot   107,80 → 110,60     +89,60
+CITAS · Furkan   32 lot   107,80 → 108,30     +16,00
+```
+
+"Önceki kapanış" takvim günü değil bir önceki **fiyat günü**dür: pazartesi
+satılan kâğıt cumanın kapanışıyla kıyaslanır, araya hafta sonu girmesi hesabı
+bozmaz.
+
+Üzerine o gün hesaplara işleyen **nema** ve tahsil edilen **net temettü** eklenir.
+Toplam şu kimliğe eşittir:
+
+```
+gün kârı = (gün sonu değer + gün içi satış geliri)
+         − (gün başı değer + gün içi alış maliyeti)
+```
+
+yani araya konan/çıkan para kâr sayılmaz. Bir kâğıdın günlük kârları ömrü
+boyunca toplandığında gerçekleşen kâra birebir oturur — CITAS örneğinde
+940,80 + 1.036,80 + 1.139,20 + 1.248,00 − 137,60 = **4.227,20**, Halka Arz
+sayfasındaki "gerçekleşen kâr" ile aynı kuruş.
+
+Halka arza özel iki kural: **ilk işlem gününde** borsada önceki kapanış
+olmadığı için referans halka arz fiyatıdır (para o güne dek orada bağlıydı),
+fiyatı elle girilen arzlar (`manual_price`) ise günlük değişim üretmez.
+
+Tıklayınca kırılım açılır: kalemler, o gün gerçekleşen satışlar ve en çok
+oynayan semboller. **Bugün için fiyat gelmediyse** (hafta sonu, tatil ya da
+sabah 10:00 çekiminden önce) o gün yalnızca gerçekleşen hareketler sayılır;
+rozet en son hangi günde ne olduğunu ayrıca yazar. Aynı hareketin iki güne
+birden yazılmaması için fiyat günü kaydırılmaz.
 
 **Önceki gün fiyatı olmayan kalem sayılamaz** — yeni eklenen bir fonun/hissenin
 veritabanında tek günlük fiyatı olur. Rozet bunu "N kalem sayılamadı" diye
@@ -138,6 +176,29 @@ ise Yahoo'nun zaten aynı yanıtta verdiği 1 aylık günlük seriyi yazar. Elle
 tetiklemek için Dashboard → **↻ Fiyatları güncelle**; bütün fonların geçmişini
 yeniden çekmek için fonksiyona `{ "backfill": true, "backfillPeriod": "3m" }`
 gövdesiyle istek at.
+
+### Günlük kâr defteri
+
+`/gunluk` — her günün kazancı çubuk grafikte; kâr yeşil, zarar kırmızı.
+"Birikimli" düğmesi aynı seriyi toplayarak çizer. Bir güne tıklayınca:
+
+* **kalem kalem döküm** — hangi kâğıttan/hesaptan ne kadar geldi, o pay
+  tutuldu mu, satıldı mı, alındı mı, hangi fiyattan hangi fiyata;
+* **o gün elimde ne vardı** — gün sonundaki pozisyonlar, adetleri, o güne
+  kadarki son fiyatla değerleri ve o günkü kâr/zararları.
+
+Defter ayrı bir tabloya **kaydedilmez, deftere bakılarak türetilir**: fiyat
+geçmişi, alım/satım defteri ve halka arz kayıtları zaten günlük çözünürlükte
+duruyor. Böylece uygulamayı her gün açmasan da geçmiş eksiksiz çıkar ve geriye
+dönük bir düzeltme (yanlış girilmiş satış fiyatı gibi) o günün kârına anında
+yansır.
+
+Terminalden aynı motoru çalıştırıp doğrulamak için:
+
+```bash
+npm run check:daily -- --user eposta@ornek.com                       # gün gün özet
+npm run check:daily -- --user eposta@ornek.com --day 2026-08-24      # o günün kalemleri
+```
 
 Hangi kalemin ölçülebildiğini görmek için:
 
@@ -212,6 +273,7 @@ etkilenmez.
 | `/accounts` | Banka/kurum yönetimi + güncel bakiye ve pay |
 | `/nakit` | Hesaplardaki nakit, para giriş/çıkışı, aktarım, günlük nemalandırma |
 | `/ipo` | Halka arz: hesap yönetimi, talep, dağıtım, hesap bazlı satış, kâr raporları |
+| `/gunluk` | Günlük kâr: gün gün grafik, seçilen günün kalem dökümü ve o günkü pozisyonlar |
 | `/transactions` | Gelir/gider, aylık kategori grafiği ve **verdiğin borçlar** |
 | `/reminders` | Serbest hatırlatıcılar (profil menüsünden) |
 
@@ -274,4 +336,5 @@ npm run build     # tsc -b && vite build → dist/
 npm run preview   # build çıktısını önizle
 npm run test:nema # nemalandırma hesabının testleri
 npm run check:prices  # fiyat geçmişi sağlığı (salt okunur)
+npm run check:daily -- --user eposta@ornek.com   # günlük kâr defteri (salt okunur)
 ```

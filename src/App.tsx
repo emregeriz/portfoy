@@ -8,6 +8,7 @@ import Dashboard from './pages/Dashboard'
 import Accounts from './pages/Accounts'
 import Cash from './pages/Cash'
 import Ipo from './pages/Ipo'
+import Daily from './pages/Daily'
 import Transactions from './pages/Transactions'
 import Takip from './pages/Takip'
 import Trades from './pages/Trades'
@@ -38,6 +39,7 @@ export default function App() {
               <Route path="accounts" element={<Accounts />} />
               <Route path="nakit" element={<Cash />} />
               <Route path="ipo" element={<Ipo />} />
+              <Route path="gunluk" element={<Daily />} />
               <Route path="transactions" element={<Transactions />} />
               <Route path="trades" element={<Trades />} />
               <Route path="reminders" element={<Reminders />} />
