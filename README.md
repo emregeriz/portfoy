@@ -85,9 +85,43 @@ Otomasyonun dokunmasını istemediğin varlıkta `assets.auto_price = false` yap
 ## 1c. Nakit & nemalandırma
 
 Hesaplardaki para `account_ledger` defterinde tutulur: elle **para girişi /
-çıkışı**, hesaplar arası **aktarım**, halka arz **iadesi / satış geliri** ve
-günlük **nema** aynı tabloya yazılır. Hesabın bakiyesi bu hareketlerin
-toplamıdır.
+çıkışı**, hesaplar arası **aktarım**, halka arz **talebi / iadesi / satış
+geliri**, hisse-fon **alış / satışı** ve günlük **nema** aynı tabloya yazılır.
+Hesabın bakiyesi bu hareketlerin toplamıdır.
+
+### İşlemin parası — alış/satış nakde nasıl bağlanır
+
+Alım/Satım sayfasında bir işlem kaydettiğinde parası da deftere yazılır:
+satış hesaba **girer** (+), alış hesaptan **çıkar** (−). Böylece hisse satınca
+para kaybolmaz, sattığın hesapta nakit olarak durur.
+
+Formda **"Satış parası hangi hesaba yatsın?"** alanı bunu sorar. Varsayılan
+işlemin yapıldığı hesaptır — Midas'ta sattıysan Midas'a yatar — ama başka bir
+hesap da seçebilirsin (Midas'ta sattın, para Ziraat'e geçti). Nakdini
+uygulamada takip etmediğin bir hesap için *"İşleme — nakit hareketi yazma"*
+seçeneği vardır.
+
+Hareket işleme bağlıdır (`account_ledger.trade_id` tekil): işlemi silince para
+hareketi de gider, düzenleyince üstüne yazılır. Aynı işlemi iki kez kaydetmek
+parayı iki kez saymaz. Bu yüzden elle "nakit girişi" yazmak yerine işlemin
+kendi alanını kullan — elle yazılan satır işleme bağlı olmadığı için işlem
+silinse bile kalır ve para iki kez sayılır.
+
+Kurulum: **SQL Editor** → [`supabase/trade-cash.sql`](supabase/trade-cash.sql).
+
+Nakde hiç işlenmemiş eski işlemler için:
+
+```bash
+npm run fix:trade -- --user eposta@ornek.com                          # kuru çalışma
+npm run fix:trade -- --user eposta@ornek.com --apply                  # hepsi
+npm run fix:trade -- --user eposta@ornek.com --sembol TP2 --tarih 2026-08-26 --apply
+```
+
+Betik işlemin yerine elle yazılmış `giris` satırlarını tanıyıp siler (aynı
+hesap, aynı tutar, birkaç gün mesafede), yerine işleme bağlı hareketi yazar ve
+alışlar düşülünce eksiye düşen hesaplara açılış girişi ekler. `--no-alis` yalnız
+satışları işler, `--no-acilis` açılış girişini kapatır, `--sembol/--tarih/--hesap`
+tek bir işlemi hedefler.
 
 ### Kurulum
 
@@ -392,4 +426,5 @@ npm run test:nema # nemalandırma hesabının testleri
 npm run check:prices  # fiyat geçmişi sağlığı (salt okunur)
 npm run check:daily -- --user eposta@ornek.com   # günlük kâr defteri (salt okunur)
 npm run fix:ipo -- --user eposta@ornek.com      # arz talep blokelerini onar (kuru çalışma)
+npm run fix:trade -- --user eposta@ornek.com   # işlemleri nakde işle (kuru çalışma)
 ```

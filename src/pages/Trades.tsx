@@ -21,6 +21,9 @@ import type { AssetKind, Currency, TradeSide, TradeWithRefs } from '../types/db'
 
 const KINDS: AssetKind[] = ['hisse', 'fon', 'doviz', 'altin', 'mevduat', 'kripto', 'diger']
 
+/** Nakit hesabı seçiminde "hiçbir hesaba işleme" için özel değer */
+const CASH_NONE = '__islenmesin__'
+
 /** Hesap filtresinde "hesap seçilmemiş" kayıtları için özel değer */
 const NO_ACCOUNT = '__none__'
 
@@ -66,6 +69,17 @@ export default function Trades() {
   const [amount, setAmount] = useState('')
   const [orderAmount, setOrderAmount] = useState('')
   const [currency, setCurrency] = useState<Currency>('TRY')
+  /** İşlemin yapıldığı hesap — nakit hesabı varsayılan olarak bunu izler */
+  const [tradeAccount, setTradeAccount] = useState('')
+  /** Paranın yatacağı / çıkacağı hesap; CASH_NONE ise nakit hareketi yazılmaz */
+  const [cashAccount, setCashAccount] = useState(CASH_NONE)
+
+  /** Hesap bazında nakit bakiyesi — form altında "bakiye" ipucu için */
+  const cashBalanceOf = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const l of ipoData.ledger) m.set(l.account_id, (m.get(l.account_id) ?? 0) + Number(l.amount))
+    return m
+  }, [ipoData.ledger])
 
   const regularAccounts = useMemo(() => accounts.filter((a) => !a.is_ipo), [accounts])
   const ipoAccounts = useMemo(() => accounts.filter((a) => a.is_ipo), [accounts])
@@ -136,6 +150,14 @@ export default function Trades() {
 
   const histFiltered = Boolean(histQuery || histSide || histFrom || histTo)
 
+  /**
+   * İşlemin parasının hangi hesaba yazıldığı — defterdeki `trade_id`'ye bağlı
+   * satırdan okunur. Ayrı bir kolon tutmaya gerek yok: hareketin kendisi
+   * zaten kaydın ta kendisi, işlem silinince o da gidiyor.
+   */
+  const cashAccountOfTrade = (tradeId: string) =>
+    ipoData.ledger.find((l) => l.trade_id === tradeId)?.account_id ?? null
+
   const openForm = (t: TradeWithRefs | 'new') => {
     setModal(t)
     setFormError(null)
@@ -146,6 +168,9 @@ export default function Trades() {
       setAmount('')
       setOrderAmount('')
       setCurrency('TRY')
+      const acc = accountFilter !== NO_ACCOUNT ? accountFilter : ''
+      setTradeAccount(acc)
+      setCashAccount(acc || CASH_NONE)
     } else {
       setSide(t.side)
       setQty(String(t.quantity))
@@ -153,6 +178,10 @@ export default function Trades() {
       setAmount(String(t.amount))
       setOrderAmount('')
       setCurrency(t.currency)
+      setTradeAccount(t.account_id ?? '')
+      // Daha önce nakde işlenmişse o hesap korunur; işlenmemiş eski kayıtta
+      // işlemin kendi hesabı önerilir — düzenleyince para yerine otursun.
+      setCashAccount(cashAccountOfTrade(t.id) ?? t.account_id ?? CASH_NONE)
     }
   }
 
@@ -191,19 +220,28 @@ export default function Trades() {
   })()
 
   /**
-   * Halka arz hesabındaki işlem hesabın nakit defterine de işler: satış
-   * parayı hesaba yazar (+), alış nakitten düşer (−). Hareket trade'e
-   * bağlıdır; işlem silinince veritabanı bağı sayesinde birlikte silinir.
-   * Kendi hesaplarının (Midas vb.) nakiti Nakit sayfasından elle yönetilir.
+   * İşlemin parasını nakit defterine işler: satış parayı hesaba yazar (+),
+   * alış nakitten düşer (−). Böylece hisse satınca para kaybolmaz, sattığın
+   * hesapta nakit olarak durur.
+   *
+   * Paranın hangi hesaba gideceğini kullanıcı seçer. Varsayılan işlemin
+   * yapıldığı hesaptır — Midas'ta sattıysan para Midas'a yatar — ama farklı
+   * bir hesap da seçebilirsin (Midas'ta sattın, para Ziraat'e geçti).
+   * `CASH_NONE` seçilirse hareket yazılmaz ve varsa eskisi silinir; nakdi
+   * uygulamada takip etmediğin hesaplar için kaçış kapısı.
+   *
+   * Hareket trade'e bağlıdır (`trade_id` tekil): işlem silinince veritabanı
+   * bağı sayesinde birlikte gider, düzenlenince üstüne yazılır — aynı işlemi
+   * iki kez kaydetmek parayı iki kez saymaz.
    */
   const syncTradeCash = async (
     tradeId: string,
-    v: { account_id: string | null; side: TradeSide; trade_date: string; amount: number; fx_rate: number },
-    symbol: string
+    v: { side: TradeSide; trade_date: string; amount: number; fx_rate: number },
+    symbol: string,
+    cashAccountId: string | null
   ) => {
-    const acc = accounts.find((a) => a.id === v.account_id)
-    if (!acc?.is_ipo) {
-      // Hesap arz hesabı değil(se) ya da değiştirildiyse eski hareket kalmasın
+    if (!cashAccountId) {
+      // Nakde işlenmeyecek — hesap değiştirildiyse eski hareket kalmasın
       await supabase.from('account_ledger').delete().eq('trade_id', tradeId)
       return
     }
@@ -211,7 +249,7 @@ export default function Trades() {
     const { error } = await supabase.from('account_ledger').upsert(
       {
         user_id: user!.id,
-        account_id: acc.id,
+        account_id: cashAccountId,
         trade_id: tradeId,
         kind: v.side === 'satis' ? 'satis' : 'alim',
         amount: v.side === 'satis' ? amountTry : -amountTry,
@@ -246,7 +284,7 @@ export default function Trades() {
       const asset = await ensureAsset(symbol, kind)
       const values = {
         user_id: user.id,
-        account_id: String(fd.get('account_id') ?? '') || null,
+        account_id: tradeAccount || null,
         asset_id: asset?.id ?? null,
         side,
         trade_date: String(fd.get('trade_date') ?? todayISO()),
@@ -265,7 +303,12 @@ export default function Trades() {
         tradeId = (modal as TradeWithRefs).id
         await trades.update(tradeId, values)
       }
-      if (tradeId) await syncTradeCash(tradeId, values, symbol)
+      if (tradeId) {
+        await syncTradeCash(tradeId, values, symbol, cashAccount === CASH_NONE ? null : cashAccount)
+        // Defter Halka Arz hook'undan geliyor; nakit hesabını yeniden okuyabilmek
+        // için tazele, yoksa aynı işlemi ikinci kez açtığında seçim boş görünür.
+        await ipoData.reload()
+      }
       setModal(null)
       setFormError(null)
     } catch (err) {
@@ -781,9 +824,13 @@ export default function Trades() {
             <select
               name="account_id"
               className="w-full"
-              defaultValue={
-                editing?.account_id ?? (accountFilter !== NO_ACCOUNT ? accountFilter : '')
-              }
+              value={tradeAccount}
+              onChange={(e) => {
+                setTradeAccount(e.target.value)
+                // Para varsayılan olarak işlemin yapıldığı hesaba gider —
+                // Midas'ta sattıysan Midas'a yatar. Farklıysa elle değiştir.
+                setCashAccount(e.target.value || CASH_NONE)
+              }}
             >
               <option value="">Hesap seç…</option>
               {regularAccounts.map((a) => (
@@ -801,6 +848,57 @@ export default function Trades() {
                 </optgroup>
               )}
             </select>
+          </div>
+
+          <div>
+            <label className="label">
+              {side === 'satis' ? 'Satış parası hangi hesaba yatsın?' : 'Alış parası hangi hesaptan çıksın?'}
+            </label>
+            <select className="w-full" value={cashAccount} onChange={(e) => setCashAccount(e.target.value)}>
+              {regularAccounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+              {ipoAccounts.length > 0 && (
+                <optgroup label="Halka arz hesapları">
+                  {ipoAccounts.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              <option value={CASH_NONE}>İşleme — nakit hareketi yazma</option>
+            </select>
+            {(() => {
+              const total = parseAmount(amount) || product(qty, unit)
+              if (!(total > 0)) return null
+              const target = accounts.find((a) => a.id === cashAccount)
+              if (!target) {
+                return (
+                  <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                    Nakit hareketi yazılmayacak — bu işlemin parası hiçbir hesapta görünmez.
+                  </p>
+                )
+              }
+              return (
+                <p className="mt-1 text-xs text-muted">
+                  {formatTRY(total)}{' '}
+                  {side === 'satis' ? (
+                    <>
+                      <span className="text-pos">{target.name} hesabına yazılacak</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-neg">{target.name} hesabından düşülecek</span>
+                    </>
+                  )}
+                  {' · '}
+                  bakiye {formatTRY(cashBalanceOf.get(target.id) ?? 0)}
+                </p>
+              )
+            })()}
           </div>
 
           <div className="grid grid-cols-3 gap-3">
