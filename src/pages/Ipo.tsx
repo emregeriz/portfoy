@@ -8,7 +8,10 @@ import { usePrices } from '../hooks/usePrices'
 import StatCard from '../components/StatCard'
 import NumberInput from '../components/NumberInput'
 import IpoFeed from '../components/IpoFeed'
-import { Badge, Card, Empty, ErrorBox, Modal, PageHeader, Spinner } from '../components/ui'
+import {
+  ActionMenu, Badge, Card, Empty, ErrorBox, Modal, PageHeader, Spinner,
+  type ActionItem,
+} from '../components/ui'
 import { formatNumber, formatPercent, formatTRY, parseAmount, parseTRInput, toTRInput } from '../lib/currency'
 import {
   defaultChoices, shortNeeds, FUNDING_LABELS,
@@ -28,6 +31,7 @@ const stateMeta = (s: IpoState) => STATES.find((x) => x.value === s) ?? STATES[0
 
 type ModalState =
   | { type: 'ipo'; ipo: IpoRow | null; prefill?: { name: string; bist_code: string | null } }
+  | { type: 'request'; ipo: IpoRow }
   | { type: 'allocate'; ipo: IpoRow }
   | { type: 'trading'; ipo: IpoRow }
   | { type: 'sale'; ipo: IpoRow }
@@ -46,9 +50,9 @@ export default function IpoPage() {
   const {
     ipos, entries, ledger, ipoAccounts, accounts, balanceOf, totalWaiting, blockedOf, blockedTotal,
     loading, error,
-    createIpo, updateIpo, removeIpo, setDefaultLot, toggleEntry, setEntry, applyAllocation,
-    settleSubscription, talepDateOf, settleDistribution, sellEntries, unsellEntries, transfer,
-    createIpoAccount, removeAccount,
+    createIpo, updateIpo, removeIpo, setDefaultLot, toggleEntry, setEntry, setRequests,
+    applyAllocation, settleSubscription, talepDateOf, settleDistribution, revertDistribution,
+    sellEntries, unsellEntries, transfer, createIpoAccount, removeAccount,
   } = useIpos(user?.id)
 
   /** Sol listedeki seçili arz — detay paneli bunu gösterir */
@@ -325,6 +329,56 @@ export default function IpoPage() {
     void guard(() => settleSubscription(modal.ipo, moveDate, fundChoices))
   }
 
+  // --------------------------------------------------------------- talep
+  /**
+   * Talep modalını açar — hangi hesaptan kaç lot istendiği burada girilir.
+   *
+   * Bu adım dağıtımdan tamamen ayrı: düşen lot sorulmaz, iade yazılmaz.
+   * Dağıtım açıklanmadan talebi deftere geçirebilmek için var.
+   */
+  const openRequest = (ipo: IpoRow) => {
+    setFormError(null)
+    const picked = new Set<string>()
+    const req: Record<string, string> = {}
+    for (const a of ipoAccounts) {
+      const e = entryOf(ipo.id, a.id)
+      if (e?.participated) picked.add(a.id)
+      const lot = Number(e?.requested_lot ?? 0)
+      req[a.id] = lot > 0 ? String(lot) : ''
+    }
+    setPickedAccounts(picked)
+    setReqMap(req)
+    setEqualLot('')
+    setModal({ type: 'request', ipo })
+  }
+
+  const submitRequest = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (modal?.type !== 'request' || !user) return
+    const ipo = modal.ipo
+    const equal = parseAmount(equalLot)
+    const rows = ipoAccounts.map((a) => {
+      const own = parseAmount(reqMap[a.id] ?? '')
+      return {
+        accountId: a.id,
+        participated: pickedAccounts.has(a.id),
+        // "Hepsine uygula" doluysa o kazanır; boşsa hesabın kendi lotu,
+        // o da boşsa arzın varsayılanı yazılır
+        lot: equal > 0 ? equal : own > 0 ? own : Number(ipo.default_lot ?? 0),
+      }
+    })
+    if (rows.some((r) => r.participated && !(r.lot > 0))) {
+      setFormError('İşaretli her hesaba kaç lot istediğini gir.')
+      return
+    }
+    void guard(async () => {
+      const needs = await setRequests(ipo, rows, user.id)
+      // Parası yetmeyen hesap varsa karşılığını hemen sor — bakiye ekside kalmasın
+      if (shortNeeds(needs).length) openFunding(ipo)
+      else setModal(null)
+    }, true)
+  }
+
   // ------------------------------------------------------------- dağıtım
   const openAllocate = (ipo: IpoRow) => {
     setFormError(null)
@@ -347,6 +401,21 @@ export default function IpoPage() {
     e.preventDefault()
     if (modal?.type !== 'allocate' || !user) return
     const ipo = modal.ipo
+    // Hiç lot düşmemişse bu büyük ihtimalle "dağıtım daha açıklanmadı"
+    // demektir; onaylamadan geçilmesin, çünkü istenen tutarın tamamı iade
+    // olarak hesaplara yazılır ve para blokeden çıkmış gibi görünür.
+    const totalAlloc =
+      parseAmount(equalLot) > 0
+        ? parseAmount(equalLot)
+        : Object.values(allocMap).reduce((sum, raw) => sum + parseAmount(raw), 0)
+    if (
+      totalAlloc <= 0 &&
+      !confirm(
+        'Hiçbir hesaba lot düşmedi olarak kaydedilecek: istenen tutarın tamamı iade olarak hesaplara yazılır.\n\nDağıtım henüz açıklanmadıysa vazgeç ve "Talep gir"i kullan — talebin dağıtımı beklemeden kaydolur, para blokede kalır.'
+      )
+    ) {
+      return
+    }
     void guard(async () => {
       // Yanlış girilen talep (istenen lot) da buradan düzeltilir
       for (const [accountId, raw] of Object.entries(reqMap)) {
@@ -796,6 +865,106 @@ export default function IpoPage() {
                 const meta = stateMeta(ipo.status)
                 const joined = entries.filter((e) => e.ipo_id === ipo.id && e.participated)
                 const future = ipo.trade_start_date && ipo.trade_start_date > todayISO()
+
+                // Tek "İşlem" düğmesi altında toplanan işlemler. Sıradaki
+                // adım en üstte ve vurgulu; geri dönüşü olmayan en altta.
+                const actions: ActionItem[] = []
+                if (ipo.status === 'talep_verildi') {
+                  actions.push({
+                    label: 'Talep gir',
+                    hint: 'Hangi hesaptan kaç lot istedin — dağıtımı beklemeden',
+                    tone: 'primary',
+                    onSelect: () => openRequest(ipo),
+                  })
+                }
+                if (s.openLot > 0 && (ipo.status === 'islemde' || ipo.status === 'dagitildi')) {
+                  actions.push({
+                    label: 'Sat',
+                    hint: `Elde ${formatNumber(s.openLot, 0)} lot var`,
+                    tone: 'primary',
+                    onSelect: () => openSale(ipo),
+                  })
+                }
+                actions.push(
+                  ipo.status === 'talep_verildi'
+                    ? {
+                        label: 'Dağıtımı gir',
+                        hint: 'Dağıtım açıklandıysa: hangi hesaba kaç lot düştü',
+                        onSelect: () => openAllocate(ipo),
+                      }
+                    : {
+                        label: 'Dağıtımı düzelt',
+                        hint: 'Düşen lotu değiştir — iadeler yeniden hesaplanır',
+                        onSelect: () => openAllocate(ipo),
+                      }
+                )
+                if (ipo.status === 'dagitildi') {
+                  actions.push({
+                    label: 'İşlem görmeye başladı',
+                    hint: 'İlk işlem gününü gir, fiyat çekilmeye başlasın',
+                    onSelect: () => openTrading(ipo),
+                  })
+                }
+                if (ipo.status !== 'talep_verildi' && s.totalSold === 0) {
+                  actions.push({
+                    label: 'Dağıtımı geri al',
+                    hint: 'Yanlışlıkla dağıtıldı dediysen: iadeler silinir, para blokede kalır',
+                    onSelect: () => {
+                      if (
+                        confirm(
+                          `"${ipo.name}" arzı yeniden "Talep Verildi" durumuna dönsün mü? Düşen lotlar sıfırlanır, iade olarak yazılan para blokeye geri döner. İstenen lotlar yerinde kalır.`
+                        )
+                      ) {
+                        void guard(() => revertDistribution(ipo), true)
+                      }
+                    },
+                  })
+                }
+                actions.push({
+                  label: 'Talep karşılığı',
+                  hint: 'Blokeyi hangi parayla verdin — hesaptaki parayla mı, dışarıdan mı',
+                  tone: missingTalep(ipo) ? 'primary' : 'default',
+                  onSelect: () => openFunding(ipo),
+                })
+                if (ipo.bist_code) {
+                  actions.push({
+                    label: refreshing ? 'Fiyat çekiliyor…' : 'Fiyat çek',
+                    hint: `${ipo.bist_code} güncel fiyatını BIST'ten çek`,
+                    disabled: refreshing,
+                    onSelect: () => void refreshPrices(),
+                  })
+                }
+                actions.push({
+                  label: 'Düzenle',
+                  hint: 'Ad, BIST kodu, tarih, lot fiyatı',
+                  onSelect: () => openIpoModal(ipo),
+                })
+                if (ipo.status === 'talep_verildi') {
+                  actions.push({
+                    label: 'İptal et',
+                    hint: 'Arz iptal oldu — kayıt silinmez, listenin altında durur',
+                    onSelect: () => {
+                      if (confirm(`"${ipo.name}" arzı iptal olarak işaretlensin mi?`)) {
+                        void guard(() => updateIpo(ipo.id, { status: 'iptal' }), true)
+                      }
+                    },
+                  })
+                }
+                actions.push({
+                  label: 'Sil',
+                  hint: 'Arz, katılımlar ve yazılmış para hareketleri silinir',
+                  tone: 'danger',
+                  onSelect: () => {
+                    if (
+                      confirm(
+                        `"${ipo.name}" arzı, katılımları ve hesaplara yazılmış iade/satış hareketleri silinsin mi?`
+                      )
+                    ) {
+                      void guard(() => removeIpo(ipo.id), true)
+                    }
+                  },
+                })
+
                 return (
                   <>
                     <div className="flex flex-wrap items-center gap-3">
@@ -840,85 +1009,28 @@ export default function IpoPage() {
                       </div>
                     </div>
 
-                    <div className="mt-3 flex flex-wrap gap-2">
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <ActionMenu items={actions} />
                       {ipo.status === 'talep_verildi' && (
-                        <button className="btn-ghost text-xs" onClick={() => openAllocate(ipo)}>
-                          Dağıtıldı
-                        </button>
+                        <span className="text-xs text-muted">
+                          {joined.length
+                            ? `${joined.length} hesaptan ${formatNumber(s.totalRequested, 0)} lot talep edildi`
+                            : 'Talebini gir — hangi hesaptan kaç lot istediğini yaz.'}
+                        </span>
                       )}
-                      {ipo.status === 'dagitildi' && (
-                        <button className="btn-ghost text-xs" onClick={() => openTrading(ipo)}>
-                          İşlem görmeye başladı
-                        </button>
-                      )}
-                      {(ipo.status === 'islemde' || ipo.status === 'dagitildi') && s.openLot > 0 && (
-                        <button className="btn-primary text-xs" onClick={() => openSale(ipo)}>
-                          Sat
-                        </button>
-                      )}
-                      {ipo.status !== 'talep_verildi' && (
-                        <button
-                          className="btn-ghost text-xs"
-                          onClick={() => openAllocate(ipo)}
-                          title="Düşen lotu düzelt"
-                        >
-                          Dağıtımı düzelt
-                        </button>
-                      )}
-                      {ipo.bist_code && (
-                        <button
-                          className="btn-ghost text-xs"
-                          disabled={refreshing}
-                          onClick={() => void refreshPrices()}
-                          title={`${ipo.bist_code} güncel fiyatını BIST'ten çek`}
-                        >
-                          {refreshing ? 'Çekiliyor…' : '↻ Fiyat çek'}
-                        </button>
-                      )}
-                      <button
-                        className={missingTalep(ipo) ? 'btn-primary text-xs' : 'btn-ghost text-xs'}
-                        onClick={() => openFunding(ipo)}
-                        title="Talebi hangi parayla verdin — hesaptaki parayla mı, kendi hesabından mı"
-                      >
-                        Talep karşılığı
-                      </button>
-                      <button className="btn-ghost text-xs" onClick={() => openIpoModal(ipo)}>
-                        Düzenle
-                      </button>
-                      {ipo.status === 'talep_verildi' && (
-                        <button
-                          className="btn-ghost text-xs"
-                          title="Arz iptal oldu — kayıt silinmez, listenin altında durur"
-                          onClick={() => {
-                            if (confirm(`"${ipo.name}" arzı iptal olarak işaretlensin mi?`)) {
-                              void guard(() => updateIpo(ipo.id, { status: 'iptal' }), true)
-                            }
-                          }}
-                        >
-                          İptal et
-                        </button>
-                      )}
-                      <button
-                        className="btn-danger text-xs"
-                        onClick={() => {
-                          if (
-                            confirm(
-                              `"${ipo.name}" arzı, katılımları ve hesaplara yazılmış iade/satış hareketleri silinsin mi?`
-                            )
-                          ) {
-                            void guard(() => removeIpo(ipo.id), true)
-                          }
-                        }}
-                      >
-                        Sil
-                      </button>
                     </div>
 
                     <div className="mt-4 border-t border-border pt-3">
                       {missingTalep(ipo) && (
                         <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
                           Bu arzda hesaplardan bloke edilen para deftere yazılmamış — yalnızca iade
-                          yazıldığı için hesap bakiyeleri {formatTRY(s.refund)} kadar fazla görünüyor.
+                          yazıldığı için hesap bakiyeleri{' '}
+                          {formatTRY(
+                            ledger
+                              .filter((l) => l.ipo_id === ipo.id && l.kind === 'iade')
+                              .reduce((sum, l) => sum + Number(l.amount), 0)
+                          )}{' '}
+                          kadar fazla görünüyor.
                           <button
                             type="button"
                             className="ml-1 underline underline-offset-2 hover:no-underline"
@@ -941,7 +1053,9 @@ export default function IpoPage() {
                                 <th className="th text-right" title="İstenen → düşen lot">
                                   İst → Düşen
                                 </th>
-                                <th className="th text-right">İade</th>
+                                <th className="th text-right">
+                                  {ipo.status === 'talep_verildi' ? 'Bloke' : 'İade'}
+                                </th>
                                 <th className="th text-right">Satış</th>
                                 <th className="th text-right">Kâr</th>
                                 <th className="th"></th>
@@ -957,7 +1071,11 @@ export default function IpoPage() {
                                 const lot = Number(ipo.lot_price ?? 0)
                                 const isIn = Boolean(e?.participated)
                                 const price = s.price
-                                const refund = Math.max(req - alloc, 0) * lot
+                                // Talep aşamasında para iade değil blokede;
+                                // sütun o zaman bloke tutarını gösterir
+                                const waiting = ipo.status === 'talep_verildi'
+                                const refund = waiting ? 0 : Math.max(req - alloc, 0) * lot
+                                const blocked = waiting ? req * lot : 0
                                 const realized = sold * ((soldPrice ?? 0) - lot)
                                 const openProfit =
                                   price != null ? Math.max(alloc - sold, 0) * (price - lot) : 0
@@ -997,6 +1115,10 @@ export default function IpoPage() {
                                     <td className="td text-right num">
                                       {isIn && refund > 0 ? (
                                         <span className="text-pos">{formatTRY(refund)}</span>
+                                      ) : isIn && blocked > 0 ? (
+                                        <span className="text-amber-600 dark:text-amber-400">
+                                          {formatTRY(blocked)}
+                                        </span>
                                       ) : (
                                         <span className="text-muted">—</span>
                                       )}
@@ -1433,6 +1555,113 @@ export default function IpoPage() {
           })()}
       </Modal>
 
+      <Modal open={modal?.type === 'request'} title="Talep" onClose={() => setModal(null)}>
+        {modal?.type === 'request' &&
+          (() => {
+            const ipo = modal.ipo
+            const lotPrice = Number(ipo.lot_price ?? 0)
+            const equal = parseAmount(equalLot)
+            /** Hesabın yazılacak lotu: hepsine uygula > kendi girdiği > arzın varsayılanı */
+            const lotOf = (id: string) => {
+              const own = parseAmount(reqMap[id] ?? '')
+              return equal > 0 ? equal : own > 0 ? own : Number(ipo.default_lot ?? 0)
+            }
+            const totalLot = ipoAccounts.reduce(
+              (sum, a) => sum + (pickedAccounts.has(a.id) ? lotOf(a.id) : 0),
+              0
+            )
+            return (
+              <form onSubmit={submitRequest} className="space-y-3">
+                {formError && <ErrorBox message={formError} />}
+
+                <p className="text-sm text-muted">
+                  <span className="text-ink font-medium">{ipo.name}</span> için hangi hesaptan kaç
+                  lot istedin? Dağıtım açıklanmadan da girebilirsin — düşen lot sorulmaz, iade
+                  yazılmaz.
+                </p>
+
+                <div>
+                  <label className="label">Hepsine aynı lot (isteğe bağlı)</label>
+                  <input
+                    className="w-full num"
+                    inputMode="decimal"
+                    autoFocus
+                    placeholder={`Örn. ${formatNumber(ipo.default_lot ?? 0, 0)}`}
+                    value={equalLot}
+                    onChange={(e) => setEqualLot(e.target.value)}
+                  />
+                  <p className="mt-1 text-xs text-muted">
+                    Doldurursan işaretli bütün hesaplara bu lot yazılır. Hesaplara farklı lot
+                    istediysen burayı boş bırak, aşağıdan tek tek gir.
+                  </p>
+                </div>
+
+                <div className="rounded-lg border border-border divide-y divide-border max-h-56 overflow-y-auto">
+                  {ipoAccounts.map((a) => {
+                    const on = pickedAccounts.has(a.id)
+                    return (
+                      <div key={a.id} className="flex items-center gap-2 px-3 py-2 text-sm">
+                        <label className="flex flex-1 items-center gap-2 cursor-pointer min-w-0">
+                          <input
+                            type="checkbox"
+                            className="w-4 h-4 shrink-0"
+                            checked={on}
+                            onChange={(ev) =>
+                              setPickedAccounts((prev) => {
+                                const next = new Set(prev)
+                                if (ev.target.checked) next.add(a.id)
+                                else next.delete(a.id)
+                                return next
+                              })
+                            }
+                          />
+                          <span className="truncate">{a.name}</span>
+                          <span className="text-xs text-muted num shrink-0">
+                            {formatTRY(balanceOf.get(a.id) ?? 0)}
+                          </span>
+                        </label>
+                        <input
+                          className="w-20 num text-right"
+                          inputMode="decimal"
+                          disabled={!on || equal > 0}
+                          placeholder={String(ipo.default_lot ?? '')}
+                          value={equal > 0 && on ? String(equal) : (reqMap[a.id] ?? '')}
+                          onChange={(ev) => setReqMap({ ...reqMap, [a.id]: ev.target.value })}
+                        />
+                        <span className="w-24 text-right text-xs num text-muted">
+                          {on ? formatTRY(lotOf(a.id) * lotPrice) : '—'}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                <div className="rounded-lg bg-surface2 px-3 py-2 text-sm flex justify-between">
+                  <span className="text-muted">
+                    {pickedAccounts.size} hesap · {formatNumber(totalLot, 0)} lot
+                  </span>
+                  <span className="num">{formatTRY(totalLot * lotPrice)} bloke</span>
+                </div>
+
+                <p className="text-xs text-muted">
+                  Bu tutar hesaplardan bloke edilir: bakiyeden düşer ama kaybolmaz, Dashboard'da
+                  "arzda bloke" olarak toplam varlığına sayılır. Dağıtım açıklanınca "Dağıtımı gir"
+                  ile düşen lotu yazarsın; düşmeyenin parası o zaman iade olarak hesaba döner.
+                </p>
+
+                <div className="flex justify-end gap-2 pt-1">
+                  <button type="button" className="btn-ghost" onClick={() => setModal(null)}>
+                    Vazgeç
+                  </button>
+                  <button className="btn-primary" disabled={busy}>
+                    {busy ? 'Kaydediliyor…' : 'Talebi kaydet'}
+                  </button>
+                </div>
+              </form>
+            )
+          })()}
+      </Modal>
+
       <Modal open={modal?.type === 'allocate'} title="Dağıtım" onClose={() => setModal(null)}>
         {modal?.type === 'allocate' && (
           <form onSubmit={submitAllocate} className="space-y-3">
@@ -1489,7 +1718,8 @@ export default function IpoPage() {
             <p className="text-xs text-muted">
               Kaydedince (istenen − düşen) × lot fiyatı kadar para her hesabın bakiyesine iade
               olarak yazılır. Dağıtımı düzeltirsen iade kayıtları da yeniden hesaplanır, para iki
-              kez eklenmez.
+              kez eklenmez. Dağıtım henüz açıklanmadıysa burayı kullanma —{' '}
+              <strong>İşlem ▾ Talep gir</strong> ile talebini kaydet, para blokede kalsın.
             </p>
 
             <div className="flex justify-end gap-2">
