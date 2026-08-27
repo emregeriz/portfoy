@@ -55,11 +55,19 @@ export default function Daily() {
     if (picked && !byDate.has(picked) && rows.length) setPicked(null)
   }, [picked, byDate, rows.length])
 
+  // Çubuğun boyu `chartTotal` — toplu kayıt gününde yalnızca fon kârı.
+  // Birikimli çizgi ve alttaki döküm gerçek kârı sayar, kimse kaybolmaz.
   const points: DailyPoint[] = useMemo(() => {
     let acc = 0
     return rows.map((r) => {
       acc += r.total
-      return { date: r.date, total: r.total, cumulative: acc }
+      return {
+        date: r.date,
+        total: r.chartTotal,
+        real: r.total,
+        trimmed: r.bulkEntry,
+        cumulative: acc,
+      }
     })
   }, [rows])
 
@@ -175,6 +183,15 @@ export default function Daily() {
         />
         <p className="mt-2 text-xs text-muted">
           Bir güne tıkla, o günün dökümü aşağıda açılsın. Yalnızca hareket olan günler çizilir.
+          {mode === 'gunluk' && points.some((p) => p.trimmed) && (
+            <>
+              {' '}
+              Geçmiş pozisyonların toplu girildiği günde (kesik çerçeveli çubuk) yalnızca o günün
+              fon kârı çizilir — hisse tarafındaki kâr aylara yayılmış birikim olduğu için çubuğu
+              ölçeksiz büyütüyordu. Gün kârının tamamı aşağıdaki dökümde ve birikimli çizgide
+              duruyor.
+            </>
+          )}
         </p>
       </Card>
 
@@ -220,6 +237,19 @@ function DayBreakdown({ row }: { row: DailyRow }) {
         <Mini label="Nema" value={row.nema} />
         <Mini label="Temettü" value={row.dividend} />
       </div>
+
+      {row.bulkEntry && (
+        <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          Bu gün geçmiş pozisyonlar toplu girildi: aylara yayılmış kâr tek güne yığıldığı için
+          aşağıdaki “alındı” kalemleri kendi alış fiyatından ölçülüyor. Gün toplamı olduğu gibi
+          duruyor, grafikteki çubuk yalnızca o günün fon kârını{' '}
+          <span className="num font-medium">
+            {row.chartTotal >= 0 ? '+' : '−'}
+            {formatTRY(Math.abs(row.chartTotal))}
+          </span>{' '}
+          gösteriyor.
+        </div>
+      )}
 
       {!row.items.length ? (
         <Empty>O gün ölçülebilir bir hareket olmadı.</Empty>

@@ -24,6 +24,12 @@ import type { AssetKind } from '../types/db'
  *
  * yani araya konan/çıkan para kâr sayılmaz. Bir kâğıdın ömrü boyunca günlük
  * kârları toplandığında gerçekleşen kâra birebir oturur.
+ *
+ * Tek istisna grafiğin ölçeğidir: geçmişte alınmış pozisyonlar bir günde
+ * toplu girildiğinde aylara yayılmış kâr o güne yığılır ve çubuk diğer
+ * günleri görünmez yapar. Böyle günler `bulkEntry` ile işaretlenir ve
+ * `chartTotal` yalnızca fon kalemlerini taşır — `total` ve kalem dökümü
+ * değişmez, yani kâr kaybolmaz, sadece çubuk gerçek ölçeğine iner.
  */
 
 // --------------------------------------------------------------------
@@ -162,6 +168,10 @@ export interface DailyRow {
   hasPrices: boolean
   /** Gün sonunda elde tutulan halka arz lotu */
   ipoLots: number
+  /** Geçmiş pozisyonlar o gün toplu girildi — aylık kâr tek güne yığıldı */
+  bulkEntry: boolean
+  /** Grafiğe çizilen değer — toplu kayıt gününde yalnızca fon kalemleri */
+  chartTotal: number
 }
 
 export interface DailyInput {
@@ -185,6 +195,16 @@ export interface DailyInput {
 const EPS = 1e-9
 /** Yarım kuruşun altındaki hareket kalem olarak listelenmez */
 const MIN_ITEM = 0.005
+
+/**
+ * Tek seansta imkânsız olan alış kazancı.
+ *
+ * BIST'te günlük fiyat marjı %10'dur; "alış → kapanış" farkı bunun kat kat
+ * üstündeyse kâğıt o gün alınmamış, geçmişte alınmış pozisyon o gün sisteme
+ * girilmiştir. Aylara yayılmış kâr tek güne yığıldığı için grafikte her şeyi
+ * bastıran bir çubuk çıkar; motor böyle günleri `bulkEntry` diye işaretler.
+ */
+const BULK_ENTRY_PCT = 50
 
 interface Flow {
   buyQty: number
@@ -736,6 +756,17 @@ export function computeDailyReturns(input: DailyInput): DailyRow[] {
     }
     const total = priceDelta + ipoDelta + nema + dividend
 
+    // Toplu kayıt günü: gün kârı ve dökümü olduğu gibi kalır, yalnızca
+    // grafiğe yazılan değer fon kalemlerine iner. Fonun günlük getirisi
+    // gerçek fiyat hareketidir; hisse tarafı ise aslında geçmiş aylarda
+    // kazanılmış kâr olduğu için çubuğu ölçeksiz büyütür.
+    const bulkEntry = items.some(
+      (i) => i.part === 'alis' && i.pct != null && i.pct > BULK_ENTRY_PCT
+    )
+    const chartTotal = bulkEntry
+      ? items.reduce((s, i) => (i.kind === 'fon' ? s + i.delta : s), 0)
+      : total
+
     // O günün sonunda elde ne vardı
     const holdings: DailyHolding[] = []
     let value = 0
@@ -801,6 +832,8 @@ export function computeDailyReturns(input: DailyInput): DailyRow[] {
       unmeasured,
       hasPrices,
       ipoLots,
+      bulkEntry,
+      chartTotal,
     })
   }
 

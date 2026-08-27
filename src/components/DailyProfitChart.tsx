@@ -18,8 +18,13 @@ import { useChartColors, useTheme } from '../hooks/useTheme'
 
 export interface DailyPoint {
   date: string
+  /** Çubuğun boyu — toplu kayıt gününde yalnızca fon kârı */
   total: number
-  /** O güne kadarki birikimli kâr */
+  /** O günün gerçek kârı; çubuk kırpıldıysa `total`den farklıdır */
+  real: number
+  /** Çubuk kırpıldı mı — geçmiş pozisyonların toplu girildiği gün */
+  trimmed: boolean
+  /** O güne kadarki birikimli kâr — gerçek günlük kârların toplamı */
   cumulative: number
 }
 
@@ -41,6 +46,11 @@ interface Props {
  *
  * Yalnızca hareket olan günler çizilir; borsanın kapalı olduğu günler
  * grafikte yer kaplamaz.
+ *
+ * Geçmiş pozisyonların toplu girildiği günde çubuk kırpılır (`trimmed`):
+ * boyu yalnızca o günün fon kârı kadardır, çünkü hisse tarafındaki kâr
+ * aslında aylara yayılmış birikimdir. Gerçek gün kârı kaybolmaz —
+ * ipucunda yazar, birikimli çizgide ve gün dökümünde tam sayılır.
  */
 export default function DailyProfitChart({ data, selected, onSelect, mode, height = 280 }: Props) {
   const cc = useChartColors()
@@ -72,9 +82,19 @@ export default function DailyProfitChart({ data, selected, onSelect, mode, heigh
           {formatTRY(Math.abs(v))}
         </div>
         {mode === 'birikimli' && (
-          <div className={`text-xs num ${p.total >= 0 ? 'text-pos' : 'text-neg'}`}>
-            o gün {p.total >= 0 ? '+' : '−'}
-            {formatTRY(Math.abs(p.total))}
+          <div className={`text-xs num ${p.real >= 0 ? 'text-pos' : 'text-neg'}`}>
+            o gün {p.real >= 0 ? '+' : '−'}
+            {formatTRY(Math.abs(p.real))}
+          </div>
+        )}
+        {p.trimmed && mode === 'gunluk' && (
+          <div className="mt-1 pt-1 border-t border-border text-[11px] text-muted">
+            grafikte yalnızca fon kârı — gerçek gün kârı{' '}
+            <span className={`num ${p.real >= 0 ? 'text-pos' : 'text-neg'}`}>
+              {p.real >= 0 ? '+' : '−'}
+              {formatTRY(Math.abs(p.real))}
+            </span>
+            <div>geçmiş pozisyonlar o gün toplu girilmiş</div>
           </div>
         )}
       </div>
@@ -147,7 +167,11 @@ export default function DailyProfitChart({ data, selected, onSelect, mode, heigh
                 key={d.date}
                 cursor="pointer"
                 fill={d.total >= 0 ? pos : neg}
-                fillOpacity={selected && selected !== d.date ? 0.35 : 1}
+                // Kırpılmış çubuk kesik çerçeveyle işaretlenir — o günün
+                // tamamı değil, yalnızca fon kârı çizildiği belli olsun
+                fillOpacity={(selected && selected !== d.date ? 0.35 : 1) * (d.trimmed ? 0.5 : 1)}
+                stroke={d.trimmed ? (d.total >= 0 ? pos : neg) : undefined}
+                strokeDasharray={d.trimmed ? '2 2' : undefined}
               />
             ))}
           </Bar>
