@@ -18,7 +18,8 @@
     "test:nema": "node scripts/nema-test.mjs",
     "seed:demo": "node scripts/seed-demo.mjs",
     "icons": "node scripts/make-icons.mjs",
-    "backfill:fx": "node scripts/backfill-fx.mjs"
+    "backfill:fx": "node scripts/backfill-fx.mjs",
+    "fix:ipodate": "node scripts/fix-ipo-trade-date.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.1",
