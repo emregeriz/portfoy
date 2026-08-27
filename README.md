@@ -220,7 +220,8 @@ o hesaplar **ayrı tutulur**: `accounts.is_ipo = true` olanlar yalnızca Halka A
 sayfasında listelenir, Nakit ve Hesaplar sayfalarını kalabalıklaştırmaz. Yine de
 bakiyeleri senin toplam varlığına girer — para senin.
 
-Kurulum: **SQL Editor** → [`supabase/ipo-v2.sql`](supabase/ipo-v2.sql).
+Kurulum: **SQL Editor** → [`supabase/ipo-v2.sql`](supabase/ipo-v2.sql), ardından
+[`supabase/ipo-talep.sql`](supabase/ipo-talep.sql) (talep blokesi — aşağıda).
 
 ### Adımlar
 
@@ -228,14 +229,65 @@ Kurulum: **SQL Editor** → [`supabase/ipo-v2.sql`](supabase/ipo-v2.sql).
 |---|---|
 | **+ Hesap ekle** | Halka arz hesabı açılır (kimin hesabı olduğunu nota yaz) |
 | **+ Arz Ekle** | Arz adı, BIST kodu, lot fiyatı ve **hesap başına istenen lot** girilir; aşağıdaki listede işaretlediğin her hesaba bu lot doğrudan yazılır |
+| **Talep karşılığı** | Kaydedince kendiliğinden açılır: istenen lot × lot fiyatı her hesaptan **bloke** edilir, parasının yetmediği hesap için "hesaptaki parayla / kendi hesabımdan / dışarıdan" sorulur |
 | **Dağıtıldı** | Tek kutuya eşit lot yazarsın (örn. 30 → herkese 30) ya da hesap hesap girersin. Kaydedince (istenen − düşen) × lot fiyatı her hesaba **iade** olarak yatar |
 | **İşlem görmeye başladı** | İlk işlem gününü girersin. Bugün/geçmişse fiyat hemen çekilir; ileri tarihse o sabah **10:01**'de otomatik çekilir |
 | **Sat** | Hesapları toplu işaretleyip tek fiyattan ya da satır satır ayrı ayrı satarsın. Gelir o hesabın bakiyesine yazılır |
 | **Para aktar** | Hesapta biriken parayı kendi hesabına (ya da dışarı) aktarırsın |
 
-Aynı adımı tekrar çalıştırmak parayı ikiye katlamaz: dağıtım ve satış kayıtları
-silinip yeniden yazılır. Satışı yanlış fiyattan girdiysen "Satışı geri al" ile
-hesabı açık pozisyona döndürebilirsin.
+Aynı adımı tekrar çalıştırmak parayı ikiye katlamaz: bloke, dağıtım ve satış
+kayıtları silinip yeniden yazılır. Satışı yanlış fiyattan girdiysen "Satışı geri
+al" ile hesabı açık pozisyona döndürebilirsin.
+
+### Talep karşılığı — paranın iki yakası
+
+Defter arzın **iki tarafını da** tutar. Talep verilirken hesaptan bloke edilen
+tutar `talep` (−), dağıtımda geri yatan tutar `iade` (+) olarak yazılır:
+
+```
+talep (−)  istenen lot × lot fiyatı
+iade  (+)  (istenen − düşen) × lot fiyatı
+─────────────────────────────────────────
+kalan (−)  düşen lot × lot fiyatı   = elindeki payın maliyeti
+```
+
+Hiç lot düşmezse ikisi birbirini götürür ve bakiye değişmez — hesapta zaten
+duran parayla arza girmenin doğru karşılığı budur. Bloke tarafı yazılmazsa iade
+yoktan var olmuş para gibi görünür ve bakiye iade kadar şişer.
+
+`cikis`ten farkı: `cikis` para sistemden tamamen çıktı demektir ve net varlığı
+azaltır. `talep` ise para hâlâ senin, yalnızca dağıtıma kadar aracı kurumda
+bloke. Dashboard bunu **"arzda bloke"** satırıyla toplam varlığına geri ekler,
+Halka Arz sayfası da ayrı bir kartta gösterir.
+
+Hesabın parası talebi karşılamıyorsa "Talep karşılığı" ekranı açığı hesap hesap
+gösterir ve kaynağını sorar:
+
+| Seçim | Deftere yazılan | Toplam varlık |
+|---|---|---|
+| **Hesaptaki parayla** | hiçbir şey — para zaten oradaydı | değişmez |
+| **Kendi hesabımdan attım** | transfer çifti (kaynaktan −, arz hesabına +) | değişmez |
+| **Dışarıdan yatırdım** | `giris` (+) | açık kadar artar |
+
+Bu ekran idempotenttir: ikinci kez açıp kaydetmek parayı iki kez atmaz, önceki
+karşılık hareketleri silinip yenisi yazılır.
+
+### Eski kayıtları düzeltme
+
+Bu sürümden önce açılmış arzlarda bloke satırı yoktur; sayfa bunu arzın üstünde
+sarı bir uyarıyla söyler ve "Talep karşılığını gir" ile tek tıkta düzeltir.
+Hepsini birden düzeltmek için:
+
+```bash
+npm run fix:ipo -- --user eposta@ornek.com            # kuru çalışma, hiçbir şey yazmaz
+npm run fix:ipo -- --user eposta@ornek.com --apply    # yazar
+```
+
+Betik elle "talep bloke" diye yazılmış `cikis` satırlarını tanıyıp `talep`e
+çevirir (tutara dokunmaz), eksik blokeleri yazar ve bloke yüzünden geçmişte
+eksiye düşen hesaplara açığı kapatacak kadar açılış girişi ekler — o para
+hesapta zaten vardı, sadece kayda geçmemişti. Açılış girişi istemiyorsan
+`--no-acilis` ver, hesap eksi kalır ve doğru kaynağı uygulamadan seçersin.
 
 ### Raporlar
 
@@ -243,6 +295,8 @@ hesabı açık pozisyona döndürebilirsin.
 - **Arz Bazlı Kâr** — hangi arz ne getirdi (maliyet, iade, satış geliri, kâr)
 - **Dashboard → Halka arz iadesi** — bütün hesaplarda çekilmeyi bekleyen toplam para,
   hesap hesap değil tek satır
+- **Dashboard → Arzda bloke** — talebi verilmiş, dağıtımı beklenen para; hesaptan
+  düşmüştür ama senindir, toplam varlığa sayılır
 
 ## 2. Güvenlik modeli
 
@@ -337,4 +391,5 @@ npm run preview   # build çıktısını önizle
 npm run test:nema # nemalandırma hesabının testleri
 npm run check:prices  # fiyat geçmişi sağlığı (salt okunur)
 npm run check:daily -- --user eposta@ornek.com   # günlük kâr defteri (salt okunur)
+npm run fix:ipo -- --user eposta@ornek.com      # arz talep blokelerini onar (kuru çalışma)
 ```

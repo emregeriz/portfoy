@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabase'
+import { todayISO } from '../lib/calc'
+import {
+  accountNeeds, blockedByIpo, fundingRows, talepRows, totalBlocked as sumBlocked,
+  type AccountNeed, type FundingChoice,
+} from '../lib/ipoFunding'
 import type { Account, AccountBalance, IpoEntry, IpoRow, LedgerRow } from '../types/db'
 
 export interface IpoStats {
@@ -83,11 +88,17 @@ export function ipoStats(ipo: IpoRow, entries: IpoEntry[], price: number | null)
 /**
  * Halka arz veri katmanı.
  *
- * Para akışı `account_ledger` üzerinden yürür: dağıtımda geri yatan tutar
- * "iade", satış geliri "satis", hesaplar arası aktarım "transfer" (biri
- * eksi biri artı çift kayıt), sistemden çıkan para "cikis". Hesap bakiyesi
- * bu hareketlerin toplamıdır — yani hesapta duran para hem o kişinin
- * hesabında görünür hem de senin toplam varlığına girer.
+ * Para akışı `account_ledger` üzerinden yürür: talep verilince bloke edilen
+ * tutar "talep" (−), dağıtımda geri yatan tutar "iade" (+), satış geliri
+ * "satis", hesaplar arası aktarım "transfer" (biri eksi biri artı çift
+ * kayıt), sistemden çıkan para "cikis". Hesap bakiyesi bu hareketlerin
+ * toplamıdır — yani hesapta duran para hem o kişinin hesabında görünür hem
+ * de senin toplam varlığına girer.
+ *
+ * Talep ve iade birlikte çalışır: ikisi de yazıldığında hesapta net olarak
+ * yalnızca düşen lotun maliyeti kalır. Talep tarafı yazılmazsa iade yoktan
+ * var olmuş para gibi görünür ve bakiye şişer — hesapta zaten duran parayla
+ * arza girmenin defterdeki karşılığı budur.
  *
  * Dağıtım ve satış kayıtları yeniden hesaplanabilir olsun diye ilgili
  * hareketler önce silinip yeniden yazılır; iki kez "dağıtıldı" demek parayı
@@ -132,6 +143,86 @@ export function useIpos(userId?: string | null) {
     void load()
   }, [load])
 
+  // ------------------------------------------------------- talep karşılığı
+  /**
+   * Blokenin yazılacağı gün — daha önce yazılmışsa aynı gün korunur, yoksa
+   * arzın talep tarihi. Katılımı düzeltmek hareketi bugüne kaydırmasın diye.
+   */
+  const talepDateOf = useCallback(
+    (ipoId: string, ipo?: IpoRow | null) =>
+      ledger.find((l) => l.ipo_id === ipoId && l.kind === 'talep')?.date ?? ipo?.ipo_date ?? todayISO(),
+    [ledger]
+  )
+
+  /**
+   * Talep verilince hesaplardan bloke edilen parayı deftere yazar.
+   *
+   * `talep` satırları her çağrıda silinip yeniden yazılır — hesap ekleyip
+   * çıkarmak ya da lotu düzeltmek bloke tutarını ikiye katlamaz.
+   *
+   * `choices` verilirse açığı kapatan hareketler de yazılır: "kendi
+   * hesabımdan" transfer çifti, "dışarıdan" tek `giris` satırı, "hesaptaki
+   * parayla" hiçbir şey. Bunlar da arza bağlı yazıldığı için modalı ikinci
+   * kez açmak parayı iki kez atmaz; önce eskiler silinir.
+   *
+   * `choices` verilmezse yalnızca bloke tazelenir, kaynak seçimine
+   * dokunulmaz — kutucuk işaretlerken istenmeyen para hareketi olmasın diye.
+   */
+  const settleSubscription = useCallback(
+    async (ipo: IpoRow, date: string, choices?: Record<string, FundingChoice>): Promise<AccountNeed[]> => {
+      // Katılım ve defter aynı işlemde değişmiş olabilir; veritabanının
+      // güncel hâlinden oku, state'e güvenme.
+      const [entryRes, ledRes, balRes] = await Promise.all([
+        supabase.from('ipo_entries').select('*').eq('ipo_id', ipo.id),
+        supabase.from('account_ledger').select('*').eq('ipo_id', ipo.id),
+        supabase.from('v_account_balances').select('*').eq('user_id', ipo.user_id),
+      ])
+      const readErr = entryRes.error ?? ledRes.error ?? balRes.error
+      if (readErr) throw new Error(readErr.message)
+
+      const freshEntries = (entryRes.data ?? []) as IpoEntry[]
+      const freshLedger = (ledRes.data ?? []) as LedgerRow[]
+      const balMap = new Map<string, number>()
+      for (const b of (balRes.data ?? []) as AccountBalance[]) balMap.set(b.account_id, Number(b.balance))
+
+      const needs = accountNeeds(
+        ipo, freshEntries, new Map(accounts.map((a) => [a.id, a.name])), balMap, freshLedger
+      )
+
+      if (choices) {
+        // Karşılık hareketleri arza bağlı yazılır; yeniden seçim yapılınca
+        // eskisi silinip yenisi yazılır ki para üst üste binmesin.
+        const { error } = await supabase
+          .from('account_ledger')
+          .delete()
+          .eq('ipo_id', ipo.id)
+          .in('kind', ['giris', 'transfer'])
+        if (error) throw new Error(error.message)
+        const rows = fundingRows(ipo, needs, choices, date, () => crypto.randomUUID())
+        if (rows.length) {
+          const { error: insErr } = await supabase.from('account_ledger').insert(rows)
+          if (insErr) throw new Error(insErr.message)
+        }
+      }
+
+      const { error: delErr } = await supabase
+        .from('account_ledger')
+        .delete()
+        .eq('ipo_id', ipo.id)
+        .eq('kind', 'talep')
+      if (delErr) throw new Error(delErr.message)
+
+      const rows = talepRows(ipo, needs, date)
+      if (rows.length) {
+        const { error } = await supabase.from('account_ledger').insert(rows)
+        if (error) throw new Error(error.message)
+      }
+      await load()
+      return needs
+    },
+    [accounts, load]
+  )
+
   // ---------------------------------------------------------------- arz
   const createIpo = useCallback(
     async (
@@ -155,11 +246,14 @@ export function useIpos(userId?: string | null) {
           }))
         )
         if (entryErr) throw new Error(entryErr.message)
+        // Bloke hemen yazılır ki bakiye bir an bile şişik görünmesin; parayı
+        // nereden verdiğini sayfa hemen ardından "Talep karşılığı" ile sorar.
+        await settleSubscription(ipo, ipo.ipo_date ?? todayISO())
       }
       await load()
       return ipo
     },
-    [load]
+    [load, settleSubscription]
   )
 
   const updateIpo = useCallback(
@@ -173,14 +267,13 @@ export function useIpos(userId?: string | null) {
 
   const removeIpo = useCallback(
     async (id: string) => {
-      // Ledger'daki iade/satış satırları FK "set null" olduğu için arzla
-      // birlikte silinmez — yanlış girilen arzın parası bakiyede kalmasın
-      // diye burada elle temizlenir. Transferler arza bağlı değildir, kalır.
-      const { error: ledErr } = await supabase
-        .from('account_ledger')
-        .delete()
-        .eq('ipo_id', id)
-        .in('kind', ['iade', 'satis'])
+      // Ledger satırları FK "set null" olduğu için arzla birlikte silinmez —
+      // yanlış girilen arzın parası bakiyede kalmasın diye burada elle
+      // temizlenir. Arza bağlı olan her şey gider: bloke, iade, satış ve
+      // talep karşılığı olarak yazılmış giriş/transferler (transferin iki
+      // ayağı da arza bağlı yazıldığı için çift birlikte kalkar). Elle
+      // yapılan hesap aktarımlarında ipo_id boştur, onlara dokunulmaz.
+      const { error: ledErr } = await supabase.from('account_ledger').delete().eq('ipo_id', id)
       if (ledErr) throw new Error(ledErr.message)
       const { error } = await supabase.from('ipos').delete().eq('id', id)
       if (error) throw new Error(error.message)
@@ -202,9 +295,12 @@ export function useIpos(userId?: string | null) {
         const { error: e2 } = await supabase.from('ipo_entries').update({ requested_lot: lot }).in('id', ids)
         if (e2) throw new Error(e2.message)
       }
+      // Talep tutarı lot × fiyat olduğu için lot değişince bloke de değişir
+      const ipo = ipos.find((i) => i.id === ipoId)
+      if (ipo) await settleSubscription({ ...ipo, default_lot: lot }, talepDateOf(ipoId, ipo))
       await load()
     },
-    [entries, load]
+    [entries, ipos, load, settleSubscription, talepDateOf]
   )
 
   // ------------------------------------------------------------ katılım
@@ -247,8 +343,10 @@ export function useIpos(userId?: string | null) {
         participated: on,
         ...(on ? { requested_lot: Number(ipo.default_lot ?? 0) } : {}),
       })
+      // Katılımdan çıkan hesabın blokesi kalkar, girenin blokesi yazılır
+      await settleSubscription(ipo, talepDateOf(ipo.id, ipo))
     },
-    [setEntry]
+    [setEntry, settleSubscription, talepDateOf]
   )
 
   /** Katılan tüm hesaplara aynı lot sayısını uygular. */
@@ -507,6 +605,18 @@ export function useIpos(userId?: string | null) {
     return m
   }, [balances])
 
+  /** Arz bazlı hâlâ bloke duran para (talep − iade) */
+  const blockedOf = useMemo(() => blockedByIpo(ledger), [ledger])
+
+  /**
+   * Dağıtımı açıklanmamış arzlarda bekleyen toplam para.
+   *
+   * Bu para hesap bakiyesinden düşmüştür ama kaybolmamıştır — aracı kurumda
+   * dağıtım gününe kadar bloke durur. Net varlığa geri eklenmesi gerekir,
+   * yoksa talep verdiğin gün servetin talep kadar azalmış görünür.
+   */
+  const blockedTotal = useMemo(() => sumBlocked(ipos, ledger), [ipos, ledger])
+
   /** Halka arz hesaplarında bekleyen toplam para — Dashboard'daki "iade" kalemi */
   const totalWaiting = useMemo(() => {
     const ids = new Set(ipoAccounts.map((a) => a.id))
@@ -522,10 +632,12 @@ export function useIpos(userId?: string | null) {
 
   return {
     ipos, entries, ledger, balances, accounts, ipoAccounts, balanceOf, totalWaiting,
+    blockedOf, blockedTotal,
     loading, error, reload: load, entriesOf,
     createIpo, updateIpo, removeIpo, setDefaultLot,
     setEntry, toggleEntry, applyAllocation,
-    settleDistribution, sellEntries, unsellEntries, transfer,
+    settleSubscription, talepDateOf, settleDistribution,
+    sellEntries, unsellEntries, transfer,
     createIpoAccount, removeAccount,
   }
 }

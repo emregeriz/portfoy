@@ -11,6 +11,7 @@
     "check:supabase": "node scripts/check-supabase.mjs",
     "check:prices": "node scripts/check-prices.mjs",
     "check:daily": "node scripts/check-daily.mjs",
+    "fix:ipo": "node scripts/fix-ipo-talep.mjs",
     "price:set": "node scripts/set-price.mjs",
     "reset:user": "node scripts/reset-user-data.mjs",
     "test:nema": "node scripts/nema-test.mjs",

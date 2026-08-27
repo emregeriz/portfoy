@@ -90,7 +90,7 @@ export default function Dashboard() {
     select: TRADE_SELECT,
   })
 
-  const { ipos, entries, accounts: ipoAccountRows, totalWaiting } = useIpos(
+  const { ipos, entries, accounts: ipoAccountRows, totalWaiting, blockedTotal } = useIpos(
     isTotal ? null : effectiveScope
   )
   /**
@@ -232,14 +232,20 @@ export default function Dashboard() {
     return { total, priced, count: snapshotPositions.length }
   }, [snapshotPositions, byAssetId])
 
+  // Talebi verilmiş arzda bloke duran para hesap bakiyesinden düşmüştür ama
+  // kaybolmamıştır — dağıtım gününe kadar aracı kurumda bekler. Toplam
+  // varlığa geri eklenmezse talep verdiğin gün servetin talep kadar düşmüş
+  // görünür, dağıtım günü de aynı kadar zıplar.
   const liveAssets =
     (live?.total ?? (tradedAssetIds.size ? 0 : last?.total_assets_try ?? 0)) +
     totalWaiting +
+    blockedTotal +
     tradeTotals.value +
     cashTotals.cash
   const showLive =
     (live && live.priced > 0) ||
     totalWaiting > 0 ||
+    blockedTotal > 0 ||
     openDebtTotal > 0 ||
     tradeTotals.value > 0 ||
     cashTotals.cash > 0
@@ -392,6 +398,14 @@ export default function Dashboard() {
                 <p className="text-lg text-pos">{formatTRY(totalWaiting)}</p>
                 <p className="text-xs text-muted">
                   <Link to="/ipo" className="hover:text-ink">Halka arz iadesi</Link> · çekilmeyi bekliyor
+                </p>
+              </div>
+            )}
+            {blockedTotal > 0 && (
+              <div>
+                <p className="text-lg text-amber-600 dark:text-amber-400">{formatTRY(blockedTotal)}</p>
+                <p className="text-xs text-muted">
+                  <Link to="/ipo" className="hover:text-ink">Arzda bloke</Link> · dağıtım bekliyor
                 </p>
               </div>
             )}

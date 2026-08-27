@@ -10,6 +10,10 @@ import NumberInput from '../components/NumberInput'
 import IpoFeed from '../components/IpoFeed'
 import { Badge, Card, Empty, ErrorBox, Modal, PageHeader, Spinner } from '../components/ui'
 import { formatNumber, formatPercent, formatTRY, parseAmount, parseTRInput, toTRInput } from '../lib/currency'
+import {
+  defaultChoices, shortNeeds, FUNDING_LABELS,
+  type AccountNeed, type FundingChoice, type FundingSource,
+} from '../lib/ipoFunding'
 import { todayISO } from '../lib/calc'
 import type { IpoEntry, IpoFeedItem, IpoRow, IpoState } from '../types/db'
 
@@ -29,6 +33,7 @@ type ModalState =
   | { type: 'sale'; ipo: IpoRow }
   | { type: 'account' }
   | { type: 'transfer'; accountId: string; max: number }
+  | { type: 'funding'; ipo: IpoRow; needs: AccountNeed[] }
   | null
 
 /** Aktarım hedefi olarak "dışarı" seçildiğinde kullanılan sabit. */
@@ -39,9 +44,11 @@ export default function IpoPage() {
   const { ensureAsset } = useAssets()
   const { bySymbol, refresh: refreshPrices, refreshing } = usePrices()
   const {
-    ipos, entries, ledger, ipoAccounts, accounts, balanceOf, totalWaiting, loading, error,
+    ipos, entries, ledger, ipoAccounts, accounts, balanceOf, totalWaiting, blockedOf, blockedTotal,
+    loading, error,
     createIpo, updateIpo, removeIpo, setDefaultLot, toggleEntry, setEntry, applyAllocation,
-    settleDistribution, sellEntries, unsellEntries, transfer, createIpoAccount, removeAccount,
+    settleSubscription, talepDateOf, settleDistribution, sellEntries, unsellEntries, transfer,
+    createIpoAccount, removeAccount,
   } = useIpos(user?.id)
 
   /** Sol listedeki seçili arz — detay paneli bunu gösterir */
@@ -66,6 +73,8 @@ export default function IpoPage() {
   const [moveDate, setMoveDate] = useState(todayISO())
   const [formLotPrice, setFormLotPrice] = useState('')
   const [formLot, setFormLot] = useState('')
+  /** Talep karşılığı modalında hesap başına seçilen kaynak */
+  const [fundChoices, setFundChoices] = useState<Record<string, FundingChoice>>({})
 
   /** Güncel fiyat: elle girilen kazanır, yoksa BIST kodundan otomatik gelen. */
   const priceOf = (ipo: IpoRow): number | null => {
@@ -228,6 +237,12 @@ export default function IpoPage() {
         const priceChanged = values.lot_price != null && values.lot_price !== prevPrice
         // Talep lotu değişince katılan hesapların istenen lotu da güncellenir
         if (lotChanged) await setDefaultLot(modal.ipo.id, values.default_lot as number)
+        // Bloke tutarı lot × fiyat olduğu için ikisinden biri değişince
+        // yeniden yazılır. Değerler doğrudan formdan verilir — sayfa state'i
+        // bu noktada henüz tazelenmemiş olabilir.
+        if (lotChanged || priceChanged) {
+          await settleSubscription({ ...modal.ipo, ...values } as IpoRow, talepDateOf(modal.ipo.id, modal.ipo))
+        }
         // Dağıtım yapılmışsa iadeler yeni lot/fiyata göre yeniden yazılır
         if ((lotChanged || priceChanged) && modal.ipo.status !== 'talep_verildi') {
           const iadeDate =
@@ -235,9 +250,79 @@ export default function IpoPage() {
           await settleDistribution({ ...modal.ipo, ...values } as IpoRow, iadeDate)
         }
       } else {
-        await createIpo({ ...values, user_id: user.id }, [...pickedAccounts])
+        const created = await createIpo({ ...values, user_id: user.id }, [...pickedAccounts])
+        // Bloke yazıldı; sıra parayı nereden verdiğinde. Hesapta zaten para
+        // varsa "hesaptaki parayla" seçili gelir, tek tıkla geçilir.
+        if (pickedAccounts.size && Number(created.lot_price ?? 0) > 0 && Number(created.default_lot ?? 0) > 0) {
+          openFunding(created)
+          return
+        }
       }
+      setModal(null)
+    }, true)
+  }
+
+  // ------------------------------------------------------- talep karşılığı
+  /** Kendi yatırım hesapların — talep karşılığını buradan aktarırsın */
+  const ownAccounts = useMemo(() => accounts.filter((a) => !a.is_ipo && a.is_active), [accounts])
+
+  /**
+   * Bloke satırı hiç yazılmamış arz — bu sürümden önce açılmış kayıtlar.
+   * İade yazılıp talep yazılmadığında bakiye iade kadar şiştiği için sayfa
+   * bunu uyarı olarak gösterir ve tek tıkla düzeltmeyi önerir.
+   */
+  const missingTalep = (ipo: IpoRow) =>
+    Number(ipo.lot_price ?? 0) > 0 &&
+    entries.some((e) => e.ipo_id === ipo.id && e.participated && Number(e.requested_lot) > 0) &&
+    !ledger.some((l) => l.ipo_id === ipo.id && l.kind === 'talep')
+
+  /**
+   * Talep karşılığı modalını açar.
+   *
+   * Açılırken bloke satırlarını yeniden yazdırır: hem taze ihtiyaç listesini
+   * buradan alır (yeni kurulan arzda sayfa state'i henüz tazelenmemiş olur),
+   * hem de blokesi hiç yazılmamış eski arzlar bu adımda kendiliğinden
+   * düzelir. İşlem idempotent — ikinci kez açmak parayı iki kez blokelemez.
+   */
+  const openFunding = (ipo: IpoRow) => {
+    setFormError(null)
+    const date = talepDateOf(ipo.id, ipo)
+    void guard(async () => {
+      const needs = await settleSubscription(ipo, date)
+      if (!needs.length) throw new Error('Bu arzda işaretli hesap yok — önce katıldığın hesapları seç.')
+      // Parası yeten hesap "hesaptaki parayla", yetmeyen "kendi hesabımdan"
+      // gelir; tek yatırım hesabın varsa kaynak da hazır seçili olur.
+      const base = defaultChoices(needs)
+      const only = ownAccounts.length === 1 ? ownAccounts[0].id : null
+      for (const n of needs) {
+        if (base[n.accountId].source === 'aktar') base[n.accountId] = { source: 'aktar', fromAccountId: only }
+      }
+      setFundChoices(base)
+      setMoveDate(date)
+      setModal({ type: 'funding', ipo, needs })
+    }, true)
+  }
+
+  const setFundChoice = (accountId: string, patch: Partial<FundingChoice>) =>
+    setFundChoices((prev) => {
+      const current: FundingChoice = prev[accountId] ?? { source: 'mevcut' }
+      return { ...prev, [accountId]: { ...current, ...patch } }
     })
+
+  /** Üstteki "hepsine uygula" — yalnızca açığı olan hesapları etkiler */
+  const applyFundingToAll = (needs: AccountNeed[], source: FundingSource) =>
+    setFundChoices((prev) => {
+      const next = { ...prev }
+      for (const n of shortNeeds(needs)) {
+        next[n.accountId] = { source, fromAccountId: prev[n.accountId]?.fromAccountId ?? ownAccounts[0]?.id ?? null }
+      }
+      return next
+    })
+
+  const submitFunding = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (modal?.type !== 'funding') return
+    void guard(() => settleSubscription(modal.ipo, moveDate, fundChoices))
   }
 
   // ------------------------------------------------------------- dağıtım
@@ -379,7 +464,16 @@ export default function IpoPage() {
           tone={totalWaiting > 0 ? 'pos' : 'neutral'}
           hint="Hesaplarda bekleyen, kendine aktarabileceğin para"
         />
-        <StatCard title="Elde Tutulan Hisse" value={totals.held} hint="Satılmamış lotun güncel değeri" />
+        {blockedTotal > 0.005 ? (
+          <StatCard
+            title="Arzda Bloke"
+            value={blockedTotal}
+            tone="warn"
+            hint="Talebi verilmiş, dağıtımı beklenen para — hâlâ senin, aracı kurumda duruyor"
+          />
+        ) : (
+          <StatCard title="Elde Tutulan Hisse" value={totals.held} hint="Satılmamış lotun güncel değeri" />
+        )}
         <StatCard
           title="Toplam Kâr"
           value={totals.profit}
@@ -781,6 +875,13 @@ export default function IpoPage() {
                           {refreshing ? 'Çekiliyor…' : '↻ Fiyat çek'}
                         </button>
                       )}
+                      <button
+                        className={missingTalep(ipo) ? 'btn-primary text-xs' : 'btn-ghost text-xs'}
+                        onClick={() => openFunding(ipo)}
+                        title="Talebi hangi parayla verdin — hesaptaki parayla mı, kendi hesabından mı"
+                      >
+                        Talep karşılığı
+                      </button>
                       <button className="btn-ghost text-xs" onClick={() => openIpoModal(ipo)}>
                         Düzenle
                       </button>
@@ -814,6 +915,21 @@ export default function IpoPage() {
                     </div>
 
                     <div className="mt-4 border-t border-border pt-3">
+                      {missingTalep(ipo) && (
+                        <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                          Bu arzda hesaplardan bloke edilen para deftere yazılmamış — yalnızca iade
+                          yazıldığı için hesap bakiyeleri {formatTRY(s.refund)} kadar fazla görünüyor.
+                          <button
+                            type="button"
+                            className="ml-1 underline underline-offset-2 hover:no-underline"
+                            onClick={() => openFunding(ipo)}
+                          >
+                            Talep karşılığını gir
+                          </button>{' '}
+                          — parayı hesaptaki bakiyeden mi verdin, kendi hesabından mı attın, orada
+                          seçeceksin.
+                        </div>
+                      )}
                       {noAccounts ? (
                         <Empty>Halka arz hesabı yok.</Empty>
                       ) : (
@@ -936,6 +1052,15 @@ export default function IpoPage() {
                         <span>İstenen: {formatNumber(s.totalRequested, 0)} lot</span>
                         <span>Düşen: {formatNumber(s.totalAllocated, 0)} lot</span>
                         <span>Maliyet: {formatTRY(s.cost)}</span>
+                        {(() => {
+                          const blocked = blockedOf.get(ipo.id) ?? 0
+                          if (blocked <= 0.005 || ipo.status !== 'talep_verildi') return null
+                          return (
+                            <span className="text-amber-600 dark:text-amber-400">
+                              Bloke: {formatTRY(blocked)}
+                            </span>
+                          )
+                        })()}
                         {s.refund > 0 && (
                           <span className="text-pos">İade: {formatTRY(s.refund)}</span>
                         )}
@@ -1126,6 +1251,186 @@ export default function IpoPage() {
             </div>
           </form>
         )}
+      </Modal>
+
+      <Modal open={modal?.type === 'funding'} title="Talep Karşılığı" onClose={() => setModal(null)}>
+        {modal?.type === 'funding' &&
+          (() => {
+            const ipo = modal.ipo
+            const needs = modal.needs
+            const short = shortNeeds(needs)
+            const sum = (list: AccountNeed[], pick: (n: AccountNeed) => number) =>
+              list.reduce((acc, n) => acc + pick(n), 0)
+            const required = sum(needs, (n) => n.required)
+            const gap = sum(short, (n) => n.shortfall)
+            const bySource = (src: FundingSource) =>
+              sum(
+                short.filter((n) => (fundChoices[n.accountId]?.source ?? 'mevcut') === src),
+                (n) => n.shortfall
+              )
+            const fromOwn = bySource('aktar')
+            const fromOutside = bySource('disari')
+
+            return (
+              <form onSubmit={submitFunding} className="space-y-3">
+                {formError && <ErrorBox message={formError} />}
+
+                <p className="text-sm text-muted">
+                  <span className="text-ink font-medium">{ipo.name}</span> talebi verilirken
+                  hesaplardan toplam <span className="num text-ink">{formatTRY(required)}</span> bloke
+                  edildi. Bu para nereden geldi?
+                </p>
+
+                <div>
+                  <label className="label">Talep tarihi</label>
+                  <input
+                    type="date"
+                    className="w-full"
+                    value={moveDate}
+                    onChange={(ev) => setMoveDate(ev.target.value)}
+                  />
+                </div>
+
+                {short.length === 0 ? (
+                  <div className="rounded-lg border border-border bg-surface2 px-3 py-2 text-xs text-muted">
+                    Bütün hesaplarda talebi karşılayacak para zaten duruyordu — bloke dışında yeni bir
+                    para hareketi yazılmayacak, toplam varlığın değişmeyecek.
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="text-muted">
+                      {short.length} hesapta toplam{' '}
+                      <span className="num text-amber-600 dark:text-amber-400">{formatTRY(gap)}</span>{' '}
+                      açık var — hepsi için:
+                    </span>
+                    {(['mevcut', 'aktar', 'disari'] as FundingSource[]).map((src) => (
+                      <button
+                        key={src}
+                        type="button"
+                        className="btn-ghost text-xs"
+                        onClick={() => applyFundingToAll(needs, src)}
+                      >
+                        {FUNDING_LABELS[src]}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <div className="overflow-x-auto rounded-lg border border-border">
+                  <table className="w-full min-w-[520px]">
+                    <thead>
+                      <tr>
+                        <th className="th">Hesap</th>
+                        <th className="th text-right">Gereken</th>
+                        <th className="th text-right" title="Talep blokesi öncesi bakiye">
+                          Hesapta
+                        </th>
+                        <th className="th text-right">Açık</th>
+                        <th className="th">Karşılık</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {needs.map((n) => {
+                        const choice = fundChoices[n.accountId] ?? { source: 'mevcut' as FundingSource }
+                        return (
+                          <tr key={n.accountId}>
+                            <td className="td font-medium">{n.accountName}</td>
+                            <td className="td text-right num">{formatTRY(n.required)}</td>
+                            <td className="td text-right num text-muted">{formatTRY(n.available)}</td>
+                            <td className="td text-right num">
+                              {n.shortfall > 0 ? (
+                                <span className="text-amber-600 dark:text-amber-400">
+                                  {formatTRY(n.shortfall)}
+                                </span>
+                              ) : (
+                                <span className="text-muted">—</span>
+                              )}
+                            </td>
+                            <td className="td">
+                              {n.shortfall === 0 ? (
+                                <span className="text-xs text-muted">Hesaptaki parayla</span>
+                              ) : (
+                                <div className="flex flex-wrap items-center gap-1">
+                                  <select
+                                    className="text-xs"
+                                    value={choice.source}
+                                    onChange={(ev) =>
+                                      setFundChoice(n.accountId, {
+                                        source: ev.target.value as FundingSource,
+                                      })
+                                    }
+                                  >
+                                    {(['mevcut', 'aktar', 'disari'] as FundingSource[]).map((src) => (
+                                      <option key={src} value={src}>
+                                        {FUNDING_LABELS[src]}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  {choice.source === 'aktar' && (
+                                    <select
+                                      className="text-xs"
+                                      value={choice.fromAccountId ?? ''}
+                                      onChange={(ev) =>
+                                        setFundChoice(n.accountId, {
+                                          fromAccountId: ev.target.value || null,
+                                        })
+                                      }
+                                    >
+                                      <option value="">Hangi hesaptan?</option>
+                                      {ownAccounts.map((a) => (
+                                        <option key={a.id} value={a.id}>
+                                          {a.name} · {formatTRY(balanceOf.get(a.id) ?? 0)}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="rounded-lg bg-surface2 px-3 py-2 text-sm space-y-0.5">
+                  <div className="flex justify-between">
+                    <span className="text-muted">Hesaplardan bloke edilen</span>
+                    <span className="num">{formatTRY(required)}</span>
+                  </div>
+                  {fromOwn > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-muted">Kendi hesabından aktarılan</span>
+                      <span className="num">{formatTRY(fromOwn)}</span>
+                    </div>
+                  )}
+                  {fromOutside > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-muted">Dışarıdan yatan · toplam varlığı artırır</span>
+                      <span className="num text-pos">+{formatTRY(fromOutside)}</span>
+                    </div>
+                  )}
+                </div>
+
+                <p className="text-xs text-muted">
+                  Bloke, dağıtım açıklanana kadar hesap bakiyesinden düşük görünür ama kaybolmaz —
+                  Dashboard'da "arzda bloke" olarak toplam varlığına sayılır. Dağıtım açıklanınca
+                  düşmeyen lotun parası iade olarak geri yazılır; hesapta yalnızca düşen lotun
+                  maliyeti kalır.
+                </p>
+
+                <div className="flex justify-end gap-2 pt-1">
+                  <button type="button" className="btn-ghost" onClick={() => setModal(null)}>
+                    Vazgeç
+                  </button>
+                  <button className="btn-primary" disabled={busy}>
+                    {busy ? 'Kaydediliyor…' : 'Kaydet'}
+                  </button>
+                </div>
+              </form>
+            )
+          })()}
       </Modal>
 
       <Modal open={modal?.type === 'allocate'} title="Dağıtım" onClose={() => setModal(null)}>

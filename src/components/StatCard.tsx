@@ -6,12 +6,18 @@ interface Props {
   value: string | number
   change?: { absolute: number; percent: number | null } | null
   hint?: ReactNode
-  tone?: 'neutral' | 'pos' | 'neg'
+  tone?: 'neutral' | 'pos' | 'neg' | 'warn'
 }
 
 export default function StatCard({ title, value, change, hint, tone = 'neutral' }: Props) {
   const valueClass =
-    tone === 'pos' ? 'text-pos' : tone === 'neg' ? 'text-neg' : 'text-ink'
+    tone === 'pos'
+      ? 'text-pos'
+      : tone === 'neg'
+        ? 'text-neg'
+        : tone === 'warn'
+          ? 'text-amber-600 dark:text-amber-400'
+          : 'text-ink'
 
   return (
     <div className="card">

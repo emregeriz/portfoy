@@ -14,6 +14,8 @@ export const LEDGER_LABELS: Record<LedgerKind, string> = {
   borc: 'Borç verme',
   tahsil: 'Borç tahsilatı',
   alim: 'Hisse/fon alışı',
+  temettu: 'Temettü',
+  talep: 'Arz talebi (bloke)',
   diger: 'Diğer',
 }
 
@@ -28,6 +30,10 @@ export const LEDGER_TONES: Record<LedgerKind, string> = {
   borc: 'warn',
   tahsil: 'pos',
   alim: 'neg',
+  temettu: 'pos',
+  // Para kaybolmadı, dağıtıma kadar aracı kurumda bekliyor — bu yüzden
+  // "çıkış" kırmızısı değil, beklemeyi anlatan uyarı tonu.
+  talep: 'warn',
   diger: 'muted',
 }
 

@@ -192,7 +192,7 @@ export interface NetWorthRow {
 export type IpoState = 'talep_verildi' | 'dagitildi' | 'islemde' | 'satildi' | 'iptal'
 export type LedgerKind =
   | 'giris' | 'iade' | 'satis' | 'transfer' | 'cikis'
-  | 'cekim' | 'nema' | 'borc' | 'tahsil' | 'alim' | 'diger'
+  | 'cekim' | 'nema' | 'borc' | 'tahsil' | 'alim' | 'temettu' | 'talep' | 'diger'
 
 export interface IpoRow {
   id: string
