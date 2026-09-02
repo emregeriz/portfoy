@@ -15,44 +15,80 @@ import { format, parseISO } from 'date-fns'
 import { tr } from 'date-fns/locale'
 import { formatCompactTRY, formatTRY } from '../lib/currency'
 import { useChartColors, useTheme } from '../hooks/useTheme'
+import type { Grain } from '../lib/dailyReturn'
 
 export interface DailyPoint {
+  /** Kovanın ilk günü — seçim anahtarı ve x ekseni */
   date: string
+  /** Kovanın son takvim günü — haftalık başlıkta aralık yazmak için */
+  end: string
   /** Çubuğun boyu — toplu kayıt gününde yalnızca fon kârı */
   total: number
-  /** O günün gerçek kârı; çubuk kırpıldıysa `total`den farklıdır */
+  /** Dönemin gerçek kârı; çubuk kırpıldıysa `total`den farklıdır */
   real: number
   /** Çubuk kırpıldı mı — geçmiş pozisyonların toplu girildiği gün */
   trimmed: boolean
-  /** O güne kadarki birikimli kâr — gerçek günlük kârların toplamı */
+  /** O döneme kadarki birikimli kâr — gerçek kârların toplamı */
   cumulative: number
+  /** Kovadaki hareketli gün sayısı */
+  count: number
 }
 
 interface Props {
   data: DailyPoint[]
-  /** Seçili gün — çubuğu vurgulanır */
+  /** Seçili kova — çubuğu vurgulanır */
   selected: string | null
-  onSelect: (date: string) => void
+  onSelect: (key: string) => void
   mode: 'gunluk' | 'birikimli'
+  /** Bir çubuk kaç günü topluyor */
+  grain?: Grain
   height?: number
 }
 
+/** Eksendeki kısa etiket */
+function tickLabel(date: string, grain: Grain): string {
+  const d = parseISO(date)
+  if (grain === 'yil') return format(d, 'yyyy', { locale: tr })
+  if (grain === 'ay') return format(d, 'MMM yy', { locale: tr })
+  return format(d, 'd MMM', { locale: tr })
+}
+
+/** İpucundaki uzun başlık */
+function pointTitle(p: DailyPoint, grain: Grain): string {
+  const start = parseISO(p.date)
+  if (grain === 'yil') return format(start, 'yyyy', { locale: tr })
+  if (grain === 'ay') return format(start, 'MMMM yyyy', { locale: tr })
+  if (grain === 'hafta') {
+    return `${format(start, 'd MMM', { locale: tr })} – ${format(parseISO(p.end), 'd MMM yyyy', {
+      locale: tr,
+    })}`
+  }
+  return format(start, 'd MMMM yyyy EEEE', { locale: tr })
+}
+
 /**
- * Günlük kâr grafiği.
+ * Kâr grafiği.
  *
- * "Günlük" modda her gün bir çubuk: kâr yeşil, zarar kırmızı. Çubuğa
- * tıklanınca o günün dökümü açılır. "Birikimli" mod aynı seriyi toplayarak
+ * "Günlük" modda her kova bir çubuk: kâr yeşil, zarar kırmızı. Çubuğa
+ * tıklanınca o dönemin dökümü açılır. "Birikimli" mod aynı seriyi toplayarak
  * çizer — kârın zaman içinde nasıl biriktiğini gösterir.
  *
- * Yalnızca hareket olan günler çizilir; borsanın kapalı olduğu günler
- * grafikte yer kaplamaz.
+ * Çözünürlük `grain` ile seçilir: gün / hafta / ay / yıl. Yalnızca hareket
+ * olan günler sayılır; borsanın kapalı olduğu günler grafikte yer kaplamaz.
  *
  * Geçmiş pozisyonların toplu girildiği günde çubuk kırpılır (`trimmed`):
  * boyu yalnızca o günün fon kârı kadardır, çünkü hisse tarafındaki kâr
- * aslında aylara yayılmış birikimdir. Gerçek gün kârı kaybolmaz —
- * ipucunda yazar, birikimli çizgide ve gün dökümünde tam sayılır.
+ * aslında aylara yayılmış birikimdir. Gerçek kâr kaybolmaz — ipucunda yazar,
+ * birikimli çizgide ve dökümde tam sayılır.
  */
-export default function DailyProfitChart({ data, selected, onSelect, mode, height = 280 }: Props) {
+export default function DailyProfitChart({
+  data,
+  selected,
+  onSelect,
+  mode,
+  grain = 'gun',
+  height = 280,
+}: Props) {
   const cc = useChartColors()
   const { theme } = useTheme()
   const axisStyle = { fill: cc.tick, fontSize: 11 }
@@ -74,27 +110,28 @@ export default function DailyProfitChart({ data, selected, onSelect, mode, heigh
     const v = mode === 'birikimli' ? p.cumulative : p.total
     return (
       <div className="rounded-lg border border-border bg-surface2 px-3 py-2 shadow-xl">
-        <div className="text-xs text-muted mb-1">
-          {format(parseISO(p.date), 'd MMMM yyyy EEEE', { locale: tr })}
-        </div>
+        <div className="text-xs text-muted mb-1">{pointTitle(p, grain)}</div>
         <div className={`text-sm num font-medium ${v >= 0 ? 'text-pos' : 'text-neg'}`}>
           {v >= 0 ? '+' : '−'}
           {formatTRY(Math.abs(v))}
         </div>
         {mode === 'birikimli' && (
           <div className={`text-xs num ${p.real >= 0 ? 'text-pos' : 'text-neg'}`}>
-            o gün {p.real >= 0 ? '+' : '−'}
+            bu dönem {p.real >= 0 ? '+' : '−'}
             {formatTRY(Math.abs(p.real))}
           </div>
         )}
+        {grain !== 'gun' && (
+          <div className="text-[11px] text-muted">{p.count} hareketli gün</div>
+        )}
         {p.trimmed && mode === 'gunluk' && (
           <div className="mt-1 pt-1 border-t border-border text-[11px] text-muted">
-            grafikte yalnızca fon kârı — gerçek gün kârı{' '}
+            grafikte yalnızca fon kârı — gerçek kâr{' '}
             <span className={`num ${p.real >= 0 ? 'text-pos' : 'text-neg'}`}>
               {p.real >= 0 ? '+' : '−'}
               {formatTRY(Math.abs(p.real))}
             </span>
-            <div>geçmiş pozisyonlar o gün toplu girilmiş</div>
+            <div>geçmiş pozisyonlar tek günde toplu girilmiş</div>
           </div>
         )}
       </div>
@@ -109,7 +146,7 @@ export default function DailyProfitChart({ data, selected, onSelect, mode, heigh
         tick={axisStyle}
         tickLine={false}
         axisLine={{ stroke: cc.grid }}
-        tickFormatter={(v) => format(parseISO(String(v)), 'd MMM', { locale: tr })}
+        tickFormatter={(v) => tickLabel(String(v), grain)}
         minTickGap={20}
       />
       <YAxis
@@ -161,7 +198,7 @@ export default function DailyProfitChart({ data, selected, onSelect, mode, heigh
           }}
         >
           {axes}
-          <Bar dataKey="total" name="Günlük kâr" radius={[3, 3, 0, 0]} isAnimationActive={false}>
+          <Bar dataKey="total" name="Kâr" radius={[3, 3, 0, 0]} isAnimationActive={false}>
             {data.map((d) => (
               <Cell
                 key={d.date}
