@@ -5,14 +5,18 @@
 -- emir: gerçekleşme tarihi, pay adedi ve gerçekleşen birim fiyat. Tutar
 -- ekranda yazan "Toplam" ile birebir aynı (pay × fiyat).
 --
--- Önce fon-stopaj.sql çalıştırılmalı: PHE hisse senedi yoğun fon olduğu
--- için stopajı 0'a çekiliyor, PBR değişken fon olduğu için varsayılan
--- orandan (%17,5) vergileniyor.
+-- Bu dosya tek başına yeter: gereken tax_rate kolonunu da açar. PHE hisse
+-- senedi yoğun fon olduğu için stopajı 0'a çekilir, PBR değişken fon olduğu
+-- için varsayılan orandan (%17,5) vergilenir.
 --
 -- Tekrar çalıştırılabilir: aynı hesaptaki PBR/PHE işlemleri silinip
 -- yeniden yazılır. Nakit defterine (account_ledger) dokunulmaz — iki
 -- pozisyon da kapandığı için parası zaten hesapta.
 -- =====================================================================
+-- Kalem bazlı stopaj kolonu — fon-stopaj.sql çalıştırılmadıysa burada açılır
+alter table public.assets
+  add column if not exists tax_rate numeric;
+
 do $seed$
 declare
   acc uuid;
