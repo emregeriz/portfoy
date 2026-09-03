@@ -292,14 +292,16 @@ export default function IpoPage() {
     setFormError(null)
     const date = talepDateOf(ipo.id, ipo)
     void guard(async () => {
-      const needs = await settleSubscription(ipo, date)
+      const { needs, existing } = await settleSubscription(ipo, date)
       if (!needs.length) throw new Error('Bu arzda işaretli hesap yok — önce katıldığın hesapları seç.')
-      // Parası yeten hesap "hesaptaki parayla", yetmeyen "kendi hesabımdan"
-      // gelir; tek yatırım hesabın varsa kaynak da hazır seçili olur.
-      const base = defaultChoices(needs)
+      // Deftere daha önce ne yazılmışsa o seçili gelir; hiçbir şey yoksa
+      // "hesaptaki parayla" (açık zaten açılış bakiyesi olarak yazıldı). Tek
+      // yatırım hesabın varsa "kendi hesabımdan"a geçince kaynak hazır olsun.
       const only = ownAccounts.length === 1 ? ownAccounts[0].id : null
+      const base = defaultChoices(needs, existing)
       for (const n of needs) {
-        if (base[n.accountId].source === 'aktar') base[n.accountId] = { source: 'aktar', fromAccountId: only }
+        const c = base[n.accountId]
+        if (!c.fromAccountId) base[n.accountId] = { ...c, fromAccountId: only }
       }
       setFundChoices(base)
       setMoveDate(date)
@@ -439,6 +441,18 @@ export default function IpoPage() {
     })
   }
 
+  /**
+   * Fiyatı tazelemeden önce BIST kodunun ortak varlık katalogunda kaydı
+   * olduğundan emin olur. `fetch-prices` yalnızca `assets` tablosundaki
+   * sembolleri çeker; takvimden açılan arzın kodu oraya hiç yazılmadığı için
+   * kâğıt işlem görmeye başlasa bile fiyat gelmiyor, kâr ₺0,00 kalıyordu.
+   */
+  const refreshWithAsset = async (ipo: IpoRow) => {
+    const code = ipo.bist_code?.trim().toUpperCase()
+    if (code) await ensureAsset(code, 'hisse', ipo.name)
+    await refreshPrices()
+  }
+
   // -------------------------------------------------- işlem görmeye başlama
   const openTrading = (ipo: IpoRow) => {
     setFormError(null)
@@ -453,7 +467,7 @@ export default function IpoPage() {
     void guard(async () => {
       await updateIpo(ipo.id, { status: 'islemde', trade_start_date: moveDate })
       // Tarih bugüne kadarsa fiyat hemen gelsin; ileri tarihliyse cron o sabah çeker
-      if (moveDate <= todayISO() && ipo.bist_code) await refreshPrices()
+      if (moveDate <= todayISO() && ipo.bist_code) await refreshWithAsset(ipo)
     })
   }
 
@@ -931,7 +945,7 @@ export default function IpoPage() {
                     label: refreshing ? 'Fiyat çekiliyor…' : 'Fiyat çek',
                     hint: `${ipo.bist_code} güncel fiyatını BIST'ten çek`,
                     disabled: refreshing,
-                    onSelect: () => void refreshPrices(),
+                    onSelect: () => void refreshWithAsset(ipo),
                   })
                 }
                 actions.push({
@@ -1021,6 +1035,30 @@ export default function IpoPage() {
                     </div>
 
                     <div className="mt-4 border-t border-border pt-3">
+                      {(() => {
+                        // Bu sürümden önce kutucukla işaretlenen hesaplarda bloke yazılmış
+                        // ama karşılığı sorulmamıştı; kayıtlı parası olmayan hesap eksiye
+                        // düştü. Tek tıkla düzelir: açık, açılış bakiyesi olarak yazılır.
+                        const negatives = joined
+                          .map((e) => accounts.find((a) => a.id === e.account_id)?.name ?? '—')
+                          .filter((_, i) => (balanceOf.get(joined[i].account_id) ?? 0) < -0.005)
+                        if (!negatives.length) return null
+                        return (
+                          <div className="mb-3 rounded-lg border border-neg/30 bg-neg/10 px-3 py-2 text-xs text-neg">
+                            {negatives.join(', ')} eksi bakiyede — talep blokesi hesaptaki kayıtlı parayı
+                            aşıyor, karşılığı yazılmamış.
+                            <button
+                              type="button"
+                              className="ml-1 underline underline-offset-2 hover:no-underline"
+                              onClick={() => openFunding(ipo)}
+                            >
+                              Düzelt
+                            </button>{' '}
+                            — açık, açılış bakiyesi olarak yazılır (para hesapta vardı, kayda geçmemişti);
+                            parayı kendi hesabından attıysan orada "kendi hesabımdan"ı seç.
+                          </div>
+                        )
+                      })()}
                       {missingTalep(ipo) && (
                         <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
                           Bu arzda hesaplardan bloke edilen para deftere yazılmamış — yalnızca iade
@@ -1392,6 +1430,7 @@ export default function IpoPage() {
               )
             const fromOwn = bySource('aktar')
             const fromOutside = bySource('disari')
+            const fromOpening = bySource('mevcut')
 
             return (
               <form onSubmit={submitFunding} className="space-y-3">
@@ -1488,6 +1527,14 @@ export default function IpoPage() {
                                       </option>
                                     ))}
                                   </select>
+                                  {choice.source === 'mevcut' && (
+                                    <span
+                                      className="text-[11px] text-muted"
+                                      title="Para hesapta vardı ama defterde yoktu — açık, açılış bakiyesi olarak yazılır"
+                                    >
+                                      açılış bakiyesi yazılır
+                                    </span>
+                                  )}
                                   {choice.source === 'aktar' && (
                                     <select
                                       className="text-xs"
@@ -1521,6 +1568,12 @@ export default function IpoPage() {
                     <span className="text-muted">Hesaplardan bloke edilen</span>
                     <span className="num">{formatTRY(required)}</span>
                   </div>
+                  {fromOpening > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-muted">Hesapta zaten duran (kayıt dışı) · açılış bakiyesi</span>
+                      <span className="num text-pos">+{formatTRY(fromOpening)}</span>
+                    </div>
+                  )}
                   {fromOwn > 0 && (
                     <div className="flex justify-between">
                       <span className="text-muted">Kendi hesabından aktarılan</span>
@@ -1539,7 +1592,8 @@ export default function IpoPage() {
                   Bloke, dağıtım açıklanana kadar hesap bakiyesinden düşük görünür ama kaybolmaz —
                   Dashboard'da "arzda bloke" olarak toplam varlığına sayılır. Dağıtım açıklanınca
                   düşmeyen lotun parası iade olarak geri yazılır; hesapta yalnızca düşen lotun
-                  maliyeti kalır.
+                  maliyeti kalır. Hesap hiçbir zaman eksiye düşmez: kayıtlı para yetmiyorsa fark
+                  açılış bakiyesi olarak yazılır, kaynağını buradan değiştirebilirsin.
                 </p>
 
                 <div className="flex justify-end gap-2 pt-1">

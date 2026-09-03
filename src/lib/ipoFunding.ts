@@ -16,9 +16,16 @@ import type { IpoEntry, IpoRow, LedgerRow } from '../types/db'
  * Hesapta yeterli para yoksa aradaki fark bir yerden gelmek zorunda; onu da
  * kullanıcı söyler:
  *
- *   mevcut → hesapta zaten duruyordu, ek kayıt yok
+ *   mevcut → hesapta zaten duruyordu; kayıtlı para yetmiyorsa fark "kayıt
+ *            öncesi hesap bakiyesi" olarak yazılır (toplam artar — o para
+ *            vardı ama defterde yoktu)
  *   aktar  → kendi hesabından attın, transfer çifti yazılır (toplam değişmez)
  *   disari → sisteme yeni para girdi, `giris` yazılır (toplam artar)
+ *
+ * Kaynak hiç seçilmese de hesap eksiye düşmez: bloke yazılırken karşılıksız
+ * kalan açık, arza bağlı bir açılış bakiyesi satırıyla kapatılır. Onarım
+ * betiğiyle (fix-ipo-talep) aynı varsayım — sonradan "Talep karşılığı"
+ * ekranında başka kaynak seçilirse bu satır silinip yerine o yazılır.
  */
 
 export type FundingSource = 'mevcut' | 'aktar' | 'disari'
@@ -111,11 +118,80 @@ export function accountNeeds(
 /** Açığı olan hesaplar — kaynak sorusu yalnızca bunlar için anlamlı */
 export const shortNeeds = (needs: AccountNeed[]) => needs.filter((n) => n.shortfall > 0)
 
-/** Hesabın parası talebi karşılıyorsa varsayılan "hesaptaki parayla" olsun */
-export function defaultChoices(needs: AccountNeed[]): Record<string, FundingChoice> {
+/**
+ * Modal açılırken seçili gelecek kaynaklar: deftere daha önce ne yazılmışsa o
+ * (aktarım → "kendi hesabımdan", dışarıdan giriş → "dışarıdan"); hiçbir şey
+ * yazılmamışsa "hesaptaki parayla" — açığı zaten açılış bakiyesi kapatıyor.
+ */
+export function defaultChoices(
+  needs: AccountNeed[],
+  existing: Record<string, FundingChoice> = {}
+): Record<string, FundingChoice> {
   const out: Record<string, FundingChoice> = {}
-  for (const n of needs) out[n.accountId] = { source: n.shortfall > 0 ? 'aktar' : 'mevcut' }
+  for (const n of needs) out[n.accountId] = existing[n.accountId] ?? { source: 'mevcut' }
   return out
+}
+
+/** Açılış bakiyesi satırını diğer girişlerden ayıran not parçası */
+export const OPENING_NOTE = 'kayıt öncesi hesap bakiyesi'
+
+/** Uygulamanın "para hesapta vardı ama defterde yoktu" diye yazdığı satır mı? */
+export const isOpeningRow = (l: LedgerRow) => l.kind === 'giris' && !!l.note?.includes(OPENING_NOTE)
+
+const openingRow = (ipo: IpoRow, accountId: string, amount: number, date: string): LedgerInsert => ({
+  user_id: ipo.user_id,
+  account_id: accountId,
+  ipo_id: ipo.id,
+  kind: 'giris',
+  amount,
+  date,
+  note: `${ipo.name} — ${OPENING_NOTE}`,
+})
+
+/**
+ * Bu arz için deftere daha önce yazılmış talep karşılığı — hesap başına tek
+ * seçim. Aktarımın artı bacağı "kendi hesabımdan" (kaynak, aynı transfer_id'li
+ * eksi bacaktan bulunur), açılış notu taşıyan giriş "hesaptaki parayla",
+ * diğer girişler "dışarıdan".
+ */
+export function existingChoices(ipo: IpoRow, ledger: LedgerRow[]): Record<string, FundingChoice> {
+  const rows = ledger.filter((l) => l.ipo_id === ipo.id)
+  const out: Record<string, FundingChoice> = {}
+  for (const l of rows) {
+    if (l.kind === 'transfer' && Number(l.amount) > 0) {
+      const src = rows.find((x) => x.transfer_id && x.transfer_id === l.transfer_id && Number(x.amount) < 0)
+      out[l.account_id] = { source: 'aktar', fromAccountId: src?.account_id ?? null }
+    } else if (l.kind === 'giris' && !out[l.account_id]) {
+      out[l.account_id] = { source: isOpeningRow(l) ? 'mevcut' : 'disari' }
+    }
+  }
+  return out
+}
+
+/**
+ * Kaynak seçilmeden yazılan bloke hesabı eksiye düşürmesin.
+ *
+ * Her hesap için açığın, deftere zaten yazılmış karşılıkla (aktarımın artı
+ * bacağı, dışarıdan giriş) kapanmayan kısmı açılış bakiyesi olur. Önceki
+ * açılış satırları sayılmaz — çağıran onları silip bunları yazar, böylece lot
+ * değişince ya da hesap katılımdan çıkınca tutar kendini düzeltir, hayalet
+ * para kalmaz.
+ */
+export function openingRows(ipo: IpoRow, needs: AccountNeed[], ledger: LedgerRow[], date: string): LedgerInsert[] {
+  const funded = new Map<string, number>()
+  for (const l of ledger) {
+    if (l.ipo_id !== ipo.id || isOpeningRow(l)) continue
+    const amt = Number(l.amount)
+    if (l.kind === 'giris' || (l.kind === 'transfer' && amt > 0)) {
+      funded.set(l.account_id, (funded.get(l.account_id) ?? 0) + amt)
+    }
+  }
+  const rows: LedgerInsert[] = []
+  for (const n of needs) {
+    const remaining = roundTRY(n.shortfall - (funded.get(n.accountId) ?? 0))
+    if (remaining > EPS) rows.push(openingRow(ipo, n.accountId, remaining, date))
+  }
+  return rows
 }
 
 /** Her hesaba blokesini yazan `talep` satırları */
@@ -136,8 +212,8 @@ export function talepRows(ipo: IpoRow, needs: AccountNeed[], date: string): Ledg
 /**
  * Açığı kapatan para hareketleri.
  *
- * `mevcut` hiçbir satır üretmez — para zaten hesaptaydı, defterde yeni bir
- * hareket yok. `aktar` iki satırlık transfer çifti üretir (kaynaktan eksi,
+ * `mevcut` açığı açılış bakiyesi olarak yazar — para hesaptaydı ama defterde
+ * yoktu; hesap eksiye düşmez. `aktar` iki satırlık transfer çifti üretir (kaynaktan eksi,
  * arz hesabına artı) ve `transfer_id` ile eşleştirir; toplam varlığın
  * değişmez. `disari` tek bir `giris` satırı yazar, toplam o kadar artar.
  *
@@ -154,7 +230,10 @@ export function fundingRows(
   for (const n of needs) {
     if (n.shortfall <= 0) continue
     const choice = choices[n.accountId] ?? { source: 'mevcut' as FundingSource }
-    if (choice.source === 'mevcut') continue
+    if (choice.source === 'mevcut') {
+      rows.push(openingRow(ipo, n.accountId, n.shortfall, date))
+      continue
+    }
 
     const note = `${ipo.name} — talep karşılığı`
     if (choice.source === 'aktar') {
@@ -198,4 +277,61 @@ export function totalBlocked(ipos: IpoRow[], ledger: LedgerRow[]): number {
     sum += Math.max(blocked.get(i.id) ?? 0, 0)
   }
   return roundTRY(sum)
+}
+
+/** Dağıtımı beklenen bir arz talebi — Hesaplar sayfası hesap satırında gösterir */
+export interface PendingRequest {
+  ipoId: string
+  accountId: string
+  name: string
+  code: string | null
+  requestedLot: number
+  lotPrice: number
+  /** Talep tarihi */
+  date: string | null
+  /** Bu arz için bu hesaptan hâlâ bloke duran para (talep − iade) */
+  blocked: number
+}
+
+/**
+ * Dağıtımı açıklanmamış arzlarda hesap bazlı bekleyen talepler.
+ *
+ * Talep verilince para hesabın nakdinden `talep` olarak düşer; dağıtım
+ * açıklanana kadar ne nakit ne hisse — aracı kurumda bloke bekler. Hesap
+ * satırı bunu göstermezse hesap talep kadar fakirleşmiş görünür, dağıtım
+ * günü de aynı kadar zıplar.
+ *
+ * Tutar defterden okunur (talep − iade), istenen lot × fiyat değil: blokesi
+ * hiç yazılmamış eski arzlarda para hâlâ nakitte durur, ikinci kez sayılmasın.
+ */
+export function pendingRequests(ipos: IpoRow[], entries: IpoEntry[], ledger: LedgerRow[]): PendingRequest[] {
+  const pending = new Map(ipos.filter((i) => i.status === 'talep_verildi').map((i) => [i.id, i]))
+  if (!pending.size) return []
+
+  const blocked = new Map<string, number>()
+  for (const l of ledger) {
+    if (!l.ipo_id || !pending.has(l.ipo_id) || (l.kind !== 'talep' && l.kind !== 'iade')) continue
+    const key = `${l.ipo_id}:${l.account_id}`
+    blocked.set(key, (blocked.get(key) ?? 0) - Number(l.amount))
+  }
+
+  const out: PendingRequest[] = []
+  for (const e of entries) {
+    const ipo = pending.get(e.ipo_id)
+    if (!ipo || !e.participated) continue
+    const lot = Number(e.requested_lot)
+    if (!(lot > 0)) continue
+    out.push({
+      ipoId: ipo.id,
+      accountId: e.account_id,
+      name: ipo.name,
+      code: ipo.bist_code?.trim().toUpperCase() || null,
+      requestedLot: lot,
+      lotPrice: Number(ipo.lot_price ?? 0),
+      date: ipo.ipo_date,
+      blocked: roundTRY(Math.max(blocked.get(`${ipo.id}:${e.account_id}`) ?? 0, 0)),
+    })
+  }
+  // Yeni talep üstte
+  return out.sort((a, b) => (b.date ?? '').localeCompare(a.date ?? '') || a.name.localeCompare(b.name, 'tr'))
 }

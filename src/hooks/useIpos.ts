@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { todayISO } from '../lib/calc'
 import {
-  accountNeeds, blockedByIpo, fundingRows, talepRows, totalBlocked as sumBlocked,
+  accountNeeds, blockedByIpo, existingChoices, fundingRows, isOpeningRow, openingRows, talepRows,
+  totalBlocked as sumBlocked,
   type AccountNeed, type FundingChoice,
 } from '../lib/ipoFunding'
 import type { Account, AccountBalance, IpoEntry, IpoRow, LedgerRow } from '../types/db'
@@ -30,6 +31,12 @@ export interface IpoStats {
   unrealized: number | null
   /** Gerçekleşen + açık kâr; fiyat yoksa yalnızca gerçekleşen */
   profit: number | null
+}
+
+/** settleSubscription'ın döndürdüğü: hesap ihtiyaçları + deftere yazılmış kaynak seçimleri */
+export interface SettleResult {
+  needs: AccountNeed[]
+  existing: Record<string, FundingChoice>
 }
 
 /**
@@ -171,11 +178,14 @@ export function useIpos(userId?: string | null) {
    * parayla" hiçbir şey. Bunlar da arza bağlı yazıldığı için modalı ikinci
    * kez açmak parayı iki kez atmaz; önce eskiler silinir.
    *
-   * `choices` verilmezse yalnızca bloke tazelenir, kaynak seçimine
-   * dokunulmaz — kutucuk işaretlerken istenmeyen para hareketi olmasın diye.
+   * `choices` verilmezse bloke tazelenir, kullanıcının seçtiği kaynaklara
+   * (aktarım, dışarıdan giriş) dokunulmaz; ama açığın karşılıksız kalan kısmı
+   * açılış bakiyesi olarak yazılır ki hesap eksiye düşmesin. Açılış satırları
+   * her seferinde silinip yeniden hesaplanır — lot değişince ya da hesap
+   * katılımdan çıkınca hayalet para kalmaz.
    */
   const settleSubscription = useCallback(
-    async (ipo: IpoRow, date: string, choices?: Record<string, FundingChoice>): Promise<AccountNeed[]> => {
+    async (ipo: IpoRow, date: string, choices?: Record<string, FundingChoice>): Promise<SettleResult> => {
       // Katılım ve defter aynı işlemde değişmiş olabilir; veritabanının
       // güncel hâlinden oku, state'e güvenme.
       const [entryRes, ledRes, balRes] = await Promise.all([
@@ -209,6 +219,19 @@ export function useIpos(userId?: string | null) {
           const { error: insErr } = await supabase.from('account_ledger').insert(rows)
           if (insErr) throw new Error(insErr.message)
         }
+      } else {
+        // Kaynak sorulmadan yazılan bloke hesabı eksiye düşürmesin: eski
+        // açılış satırları kalkar, açığın karşılanmayan kısmı yeniden yazılır.
+        const stale = freshLedger.filter(isOpeningRow).map((l) => l.id)
+        if (stale.length) {
+          const { error } = await supabase.from('account_ledger').delete().in('id', stale)
+          if (error) throw new Error(error.message)
+        }
+        const rows = openingRows(ipo, needs, freshLedger, date)
+        if (rows.length) {
+          const { error } = await supabase.from('account_ledger').insert(rows)
+          if (error) throw new Error(error.message)
+        }
       }
 
       const { error: delErr } = await supabase
@@ -224,7 +247,7 @@ export function useIpos(userId?: string | null) {
         if (error) throw new Error(error.message)
       }
       await load()
-      return needs
+      return { needs, existing: existingChoices(ipo, freshLedger) }
     },
     [accounts, load]
   )
@@ -402,8 +425,11 @@ export function useIpos(userId?: string | null) {
           if (error) throw new Error(error.message)
         }
       }
-      // Bloke istenen lot × lot fiyatı; talep değişince yeniden yazılır
-      return settleSubscription(ipo, talepDateOf(ipo.id, ipo))
+      // Bloke istenen lot × lot fiyatı; talep değişince yeniden yazılır.
+      // Çağıran yalnızca hesap ihtiyaçlarını kullanıyor; kaynak seçimleri
+      // "Talep karşılığı" modalı açıldığında ayrıca okunur.
+      const { needs } = await settleSubscription(ipo, talepDateOf(ipo.id, ipo))
+      return needs
     },
     [entries, settleSubscription, talepDateOf]
   )

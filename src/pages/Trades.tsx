@@ -64,6 +64,8 @@ export default function Trades() {
 
   // Form alanları — adet / birim fiyat / tutar birbirine bağlı
   const [side, setSide] = useState<TradeSide>('alis')
+  /** Varlık türü — fonda küsuratlı pay olmadığı için canlı bilinmesi gerekiyor */
+  const [kind, setKind] = useState<AssetKind>('fon')
   const [qty, setQty] = useState('')
   const [unit, setUnit] = useState('')
   const [amount, setAmount] = useState('')
@@ -163,6 +165,7 @@ export default function Trades() {
     setFormError(null)
     if (t === 'new') {
       setSide('alis')
+      setKind('fon')
       setQty('')
       setUnit('')
       setAmount('')
@@ -173,6 +176,7 @@ export default function Trades() {
       setCashAccount(acc || CASH_NONE)
     } else {
       setSide(t.side)
+      setKind((t.assets?.kind ?? 'fon') as AssetKind)
       setQty(String(t.quantity))
       setUnit(String(t.unit_price))
       setAmount(String(t.amount))
@@ -209,6 +213,25 @@ export default function Trades() {
     if (shares <= 0) return
     setQty(String(shares))
     setAmount(String(Number((shares * price).toFixed(2))).replace('.', ','))
+  }
+
+  /**
+   * Fonda küsuratlı pay yok. Adet küsuratlıysa gerçekte alınacak tam pay
+   * sayısını verir; sorun yoksa null döner.
+   */
+  const fundFraction = (() => {
+    if (kind !== 'fon') return null
+    const q = parseAmount(qty)
+    if (!(q > 0) || Number.isInteger(q)) return null
+    return Math.floor(q)
+  })()
+
+  /** Adedi tam paya indirir, tutarı da yeni adede göre tazeler */
+  const roundToWholeShares = () => {
+    if (fundFraction === null || fundFraction <= 0) return
+    setQty(String(fundFraction))
+    const price = parseAmount(unit)
+    if (price > 0) setAmount(String(Number((fundFraction * price).toFixed(2))).replace('.', ','))
   }
 
   const orderRefund = (() => {
@@ -270,7 +293,6 @@ export default function Trades() {
     if (!user) return
     const fd = new FormData(e.currentTarget)
     const symbol = String(fd.get('symbol') ?? '').trim().toUpperCase()
-    const kind = String(fd.get('kind') ?? 'fon') as AssetKind
     const quantity = parseAmount(qty)
     const unitPrice = parseAmount(unit)
     const total = parseAmount(amount) || quantity * unitPrice
@@ -278,6 +300,17 @@ export default function Trades() {
     if (!symbol) return setFormError('Sembol gerekli.')
     if (quantity <= 0) return setFormError('Adet sıfırdan büyük olmalı.')
     if (unitPrice <= 0) return setFormError('Birim fiyat sıfırdan büyük olmalı.')
+    // Serbest fonda küsuratlı pay yok: emir tutarıyla alınabilen tam pay kadar
+    // alınır, artan tutar hesaba iade edilir. Küsuratlı adet kaydedilirse elde
+    // olmayan pay portföyde durur ve günlük kâr defterine de o paydan yazılır.
+    if (kind === 'fon' && !Number.isInteger(quantity)) {
+      const whole = Math.floor(quantity)
+      return setFormError(
+        whole > 0
+          ? `Fonda küsuratlı pay alınmaz — bu emirle ${formatNumber(whole, 0)} tam pay alınır, artan tutar hesaba iade edilir. Adedi tam paya indir ya da "Emir tutarı" kutusunu kullan.`
+          : 'Fonda küsuratlı pay alınmaz — emir tutarı bir tam paya yetmiyor.'
+      )
+    }
 
     setSaving(true)
     try {
@@ -809,7 +842,11 @@ export default function Trades() {
             </div>
             <div>
               <label className="label">Tür</label>
-              <select name="kind" className="w-full" defaultValue={editing?.assets?.kind ?? 'fon'}>
+              <select
+                className="w-full"
+                value={kind}
+                onChange={(e) => setKind(e.target.value as AssetKind)}
+              >
                 {KINDS.map((k) => (
                   <option key={k} value={k}>
                     {k}
@@ -914,6 +951,15 @@ export default function Trades() {
                 }}
                 required
               />
+              {fundFraction !== null && (
+                <button
+                  type="button"
+                  className="mt-1 text-left text-xs text-amber-600 underline dark:text-amber-400"
+                  onClick={roundToWholeShares}
+                >
+                  Fonda küsuratlı pay yok — {formatNumber(fundFraction, 0)} tam paya indir
+                </button>
+              )}
             </div>
             <div>
               <label className="label">Birim fiyat</label>
