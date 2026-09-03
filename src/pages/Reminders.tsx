@@ -6,12 +6,21 @@ import { useAuth } from '../hooks/useAuth'
 import { useTable } from '../hooks/useTable'
 import { Badge, Card, Empty, ErrorBox, Modal, PageHeader, Spinner } from '../components/ui'
 import { todayISO } from '../lib/calc'
-import type { Reminder, RepeatMode } from '../types/db'
+import type { Reminder, ReminderChannel, RepeatMode } from '../types/db'
 
 const REPEATS: { value: RepeatMode; label: string; hint: string }[] = [
   { value: 'once', label: 'Tek seferlik', hint: 'Seçtiğin tarihte bir kez gönderilir, sonra kapanır.' },
   { value: 'monthly', label: 'Her ay', hint: 'Her ayın aynı gününde tekrarlanır.' },
 ]
+
+const CHANNELS: { value: ReminderChannel; label: string }[] = [
+  { value: 'wa', label: 'WhatsApp' },
+  { value: 'mail', label: 'E-posta' },
+  { value: 'both', label: 'WhatsApp + e-posta' },
+]
+
+const channelLabel = (c: ReminderChannel | null) =>
+  CHANNELS.find((x) => x.value === (c ?? 'wa'))?.label ?? 'WhatsApp'
 
 const fmt = (iso: string) => format(parseISO(iso), 'd MMMM yyyy', { locale: tr })
 
@@ -54,6 +63,7 @@ export default function RemindersPage() {
       next_date: String(fd.get('next_date') ?? today),
       send_time: String(fd.get('send_time') ?? '09:00'),
       repeat_mode: String(fd.get('repeat_mode') ?? 'once') as RepeatMode,
+      channel: String(fd.get('channel') ?? 'wa') as ReminderChannel,
       is_active: true,
     }
     setBusy(true)
@@ -76,14 +86,13 @@ export default function RemindersPage() {
     try {
       const { data, error: fnErr } = await supabase.functions.invoke('custom-reminders', { body: {} })
       if (fnErr) throw new Error(fnErr.message)
-      const res = data as { sent: number; errors: string[] }
-      setInfo(
-        res.errors?.length
-          ? res.errors.join(' · ')
-          : res.sent > 0
-            ? `${res.sent} hatırlatma gönderildi.`
-            : 'Tarihi ve saati gelmiş hatırlatma yok.'
-      )
+      const res = data as { sent: number; errors?: string[] }
+      // Kanal başına kısmi başarı mümkün (WhatsApp gitti, mail gitmedi gibi);
+      // gönderilenle hatalar birlikte gösterilsin.
+      const parts: string[] = []
+      if (res.sent > 0) parts.push(`${res.sent} hatırlatma gönderildi.`)
+      if (res.errors?.length) parts.push(...res.errors)
+      setInfo(parts.length ? parts.join(' · ') : 'Tarihi ve saati gelmiş hatırlatma yok.')
     } catch (ex) {
       setInfo(ex instanceof Error ? ex.message : String(ex))
     } finally {
@@ -102,6 +111,7 @@ export default function RemindersPage() {
             <th className="th">Açıklama</th>
             <th className="th">Tarih & saat</th>
             <th className="th">Tekrar</th>
+            <th className="th">Kanal</th>
             <th className="th"></th>
           </tr>
         </thead>
@@ -123,6 +133,9 @@ export default function RemindersPage() {
                   <Badge tone={r.repeat_mode === 'monthly' ? 'accent' : 'muted'}>
                     {r.repeat_mode === 'monthly' ? 'Her ay' : 'Tek seferlik'}
                   </Badge>
+                </td>
+                <td className="td whitespace-nowrap">
+                  <Badge tone={r.channel === 'both' ? 'pos' : 'muted'}>{channelLabel(r.channel)}</Badge>
                 </td>
                 <td className="td text-right whitespace-nowrap">
                   <button className="btn-ghost text-xs" onClick={() => { setFormError(null); setModal(r) }}>
@@ -157,7 +170,7 @@ export default function RemindersPage() {
     <div className="space-y-5">
       <PageHeader
         title="Hatırlatıcılar"
-        subtitle="Tarihi gelince WhatsApp'tan gelir (numara tanımlı değilse e-postayla). Başlık mesajın konusu, açıklama içeriği olur."
+        subtitle="Tarihi gelince seçtiğin kanaldan gelir: WhatsApp, e-posta ya da ikisi birden. Başlık mesajın konusu, açıklama içeriği olur."
         actions={
           <>
             <button className="btn-ghost" onClick={sendNow} disabled={busy}>
@@ -237,10 +250,19 @@ export default function RemindersPage() {
               </select>
             </div>
           </div>
+          <div>
+            <label className="label">Nereden gelsin</label>
+            <select name="channel" className="w-full" defaultValue={editing?.channel ?? 'wa'}>
+              {CHANNELS.map((c) => (
+                <option key={c.value} value={c.value}>{c.label}</option>
+              ))}
+            </select>
+          </div>
           <p className="text-xs text-muted">
             Tek seferlik hatırlatma gönderildikten sonra kapanır; her ay seçilirse bir sonraki
             ayın aynı gününe taşınır. Ayın 31'i gibi her ayda olmayan günler ay sonuna kırpılır.
-            Mesaj, seçtiğin saatten sonraki ilk kontrolde gider — en fazla 15 dakika gecikmeyle.
+            Mesaj, seçtiğin saatten sonraki ilk kontrolde gider — en fazla 5 dakika gecikmeyle.
+            WhatsApp seçiliyken mesaj gidemezse hatırlatma kaybolmasın diye e-postaya düşülür.
           </p>
           <div className="flex justify-end gap-2">
             <button type="button" className="btn-ghost" onClick={() => setModal(null)}>Vazgeç</button>

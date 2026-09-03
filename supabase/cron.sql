@@ -91,10 +91,17 @@ select cron.schedule(
 );
 
 -- ---------------------------------------------------------------- 5
--- Serbest hatırlatıcılar — 15 dakikada bir; saati gelenler gönderilir
+-- Serbest hatırlatıcılar — 5 dakikada bir; saati gelenler gönderilir
+--
+-- Aralık gecikmenin üst sınırıdır: 14:32'ye kurulan hatırlatma 14:35'te
+-- düşer. 15 dakikaydı, "gelmedi" hissi verdiği için 5'e çekildi — günde
+-- 288 çağırım eder, Edge Function kotasının çok altında kalır.
+--
+-- İş adı aynı kaldığı için bu bloğu tekrar çalıśtırmak mevcut işi günceller,
+-- ikinci bir iş açmaz.
 select cron.schedule(
   'custom-reminders-quarterly',
-  '*/15 * * * *',
+  '*/5 * * * *',
   $cron$
   select net.http_post(
     url     := 'https://wihfycgxdvazhgnnprhz.supabase.co/functions/v1/custom-reminders',
@@ -109,7 +116,7 @@ select cron.schedule(
   $cron$
 );
 
--- ---------------------------------------------------------------- 5
+-- ---------------------------------------------------------------- 5b
 -- halkarz.com arz takvimi — günde 3 kez (09:30 / 13:30 / 19:30 TR)
 --
 -- Önce supabase/halkarz.sql çalıştırılmış ve fetch-halkarz fonksiyonu
