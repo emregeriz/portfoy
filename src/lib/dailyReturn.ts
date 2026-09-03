@@ -24,6 +24,12 @@ import type { AssetKind } from '../types/db'
  *
  * yani araya konan/çıkan para kâr sayılmaz. Bir kâğıdın ömrü boyunca günlük
  * kârları toplandığında gerçekleşen kâra birebir oturur.
+ *
+ * Tek istisna grafiğin ölçeğidir: geçmişte alınmış pozisyonlar bir günde
+ * toplu girildiğinde aylara yayılmış kâr o güne yığılır ve çubuk diğer
+ * günleri görünmez yapar. Böyle günler `bulkEntry` ile işaretlenir ve
+ * `chartTotal` yalnızca fon kalemlerini taşır — `total` ve kalem dökümü
+ * değişmez, yani kâr kaybolmaz, sadece çubuk gerçek ölçeğine iner.
  */
 
 // --------------------------------------------------------------------
@@ -162,6 +168,10 @@ export interface DailyRow {
   hasPrices: boolean
   /** Gün sonunda elde tutulan halka arz lotu */
   ipoLots: number
+  /** Geçmiş pozisyonlar o gün toplu girildi — aylık kâr tek güne yığıldı */
+  bulkEntry: boolean
+  /** Grafiğe çizilen değer — toplu kayıt gününde yalnızca fon kalemleri */
+  chartTotal: number
 }
 
 export interface DailyInput {
@@ -185,6 +195,16 @@ export interface DailyInput {
 const EPS = 1e-9
 /** Yarım kuruşun altındaki hareket kalem olarak listelenmez */
 const MIN_ITEM = 0.005
+
+/**
+ * Tek seansta imkânsız olan alış kazancı.
+ *
+ * BIST'te günlük fiyat marjı %10'dur; "alış → kapanış" farkı bunun kat kat
+ * üstündeyse kâğıt o gün alınmamış, geçmişte alınmış pozisyon o gün sisteme
+ * girilmiştir. Aylara yayılmış kâr tek güne yığıldığı için grafikte her şeyi
+ * bastıran bir çubuk çıkar; motor böyle günleri `bulkEntry` diye işaretler.
+ */
+const BULK_ENTRY_PCT = 50
 
 interface Flow {
   buyQty: number
@@ -736,6 +756,17 @@ export function computeDailyReturns(input: DailyInput): DailyRow[] {
     }
     const total = priceDelta + ipoDelta + nema + dividend
 
+    // Toplu kayıt günü: gün kârı ve dökümü olduğu gibi kalır, yalnızca
+    // grafiğe yazılan değer fon kalemlerine iner. Fonun günlük getirisi
+    // gerçek fiyat hareketidir; hisse tarafı ise aslında geçmiş aylarda
+    // kazanılmış kâr olduğu için çubuğu ölçeksiz büyütür.
+    const bulkEntry = items.some(
+      (i) => i.part === 'alis' && i.pct != null && i.pct > BULK_ENTRY_PCT
+    )
+    const chartTotal = bulkEntry
+      ? items.reduce((s, i) => (i.kind === 'fon' ? s + i.delta : s), 0)
+      : total
+
     // O günün sonunda elde ne vardı
     const holdings: DailyHolding[] = []
     let value = 0
@@ -801,6 +832,8 @@ export function computeDailyReturns(input: DailyInput): DailyRow[] {
       unmeasured,
       hasPrices,
       ipoLots,
+      bulkEntry,
+      chartTotal,
     })
   }
 
@@ -847,4 +880,173 @@ export function moversOf(row: DailyRow | null | undefined): DailyMover[] {
     }))
     .filter((m) => Math.abs(m.delta) >= MIN_ITEM)
     .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
+}
+
+// --------------------------------------------------------------------
+// Dönem toplamları — haftalık / aylık / yıllık görünüm
+// --------------------------------------------------------------------
+
+/**
+ * Grafiğin çözünürlüğü: bir çubuk kaç günü topluyor.
+ *
+ * Günlük çubuklar bir yılda 250 çubuk demek — uzun aralıkta ne eğilim
+ * görünür ne de tek gün seçilebilir. Kovalanmış görünümde her hafta/ay/yıl
+ * tek çubuk olur; kovanın içindeki günler kaybolmaz, dökümde tek tek durur.
+ */
+export type Grain = 'gun' | 'hafta' | 'ay' | 'yil'
+
+/** Dönem boyunca bir kâğıdın toplam katkısı */
+export interface PeriodItem {
+  key: string
+  symbol: string
+  kind: AssetKind
+  source: DailySource
+  delta: number
+  /** Kaç ayrı günde hareket etti */
+  dayCount: number
+}
+
+export interface PeriodRow {
+  /** Kovanın ilk günü — grafiğin ekseni ve seçim anahtarı */
+  key: string
+  /** Takvim kovasının sınırları (kova başı / kova sonu) */
+  start: string
+  end: string
+  grain: Grain
+  /** Kovadaki hareketli günler, eskiden yeniye */
+  days: DailyRow[]
+  total: number
+  /** Çubuğun boyu — toplu kayıt günleri kırpılmış hâliyle toplanır */
+  chartTotal: number
+  priceDelta: number
+  ipoDelta: number
+  nema: number
+  dividend: number
+  /** Kârla kapanan gün sayısı */
+  winDays: number
+  best: DailyRow | null
+  worst: DailyRow | null
+  /** Kovanın son gününde elde ne vardı */
+  value: number
+  holdings: DailyHolding[]
+  /** Kovanın ilk günündeki taban — yüzde bunun üzerinden */
+  base: number
+  pct: number | null
+  /** İçinde toplu kayıt günü var mı — o günün çubuğu kırpılmıştı */
+  bulkEntry: boolean
+  unmeasured: number
+  items: PeriodItem[]
+}
+
+const DAY_MS = 86_400_000
+
+/** Takvim aritmetiği UTC'de yapılır — yerel saat dilimi günü kaydırmasın */
+function shiftISO(iso: string, days: number): string {
+  return new Date(Date.parse(`${iso}T00:00:00Z`) + days * DAY_MS).toISOString().slice(0, 10)
+}
+
+/** Bir günün hangi kovaya düştüğü ve o kovanın son takvim günü */
+function bucketOf(date: string, grain: Grain): { key: string; end: string } {
+  if (grain === 'hafta') {
+    // Pazartesi başlangıç — hafta sonu bir öncekine ait
+    const dow = (new Date(`${date}T00:00:00Z`).getUTCDay() + 6) % 7
+    const key = shiftISO(date, -dow)
+    return { key, end: shiftISO(key, 6) }
+  }
+  if (grain === 'ay') {
+    const y = Number(date.slice(0, 4))
+    const m = Number(date.slice(5, 7))
+    // Date.UTC'de gün 0 = bir önceki ayın son günü
+    return { key: `${date.slice(0, 7)}-01`, end: new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10) }
+  }
+  if (grain === 'yil') {
+    const y = date.slice(0, 4)
+    return { key: `${y}-01-01`, end: `${y}-12-31` }
+  }
+  return { key: date, end: date }
+}
+
+/**
+ * Günlük satırları hafta/ay/yıl kovalarına toplar.
+ *
+ * `gun` çözünürlüğünde her kova tek gündür; sayfa tek kod yolundan çizsin
+ * diye o durumda da PeriodRow döner. Toplamlar gün satırlarından aynen
+ * toplanır — hangi çözünürlükte bakılırsa bakılsın dönem toplamı değişmez.
+ */
+export function aggregateDailyRows(rows: DailyRow[], grain: Grain): PeriodRow[] {
+  const buckets = new Map<string, { end: string; days: DailyRow[] }>()
+  for (const r of rows) {
+    const { key, end } = bucketOf(r.date, grain)
+    const b = buckets.get(key)
+    if (b) b.days.push(r)
+    else buckets.set(key, { end, days: [r] })
+  }
+
+  return [...buckets.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([key, bucket]) => {
+      const days = [...bucket.days].sort((a, b) => a.date.localeCompare(b.date))
+      const acc = { total: 0, chartTotal: 0, priceDelta: 0, ipoDelta: 0, nema: 0, dividend: 0 }
+      let unmeasured = 0
+      let winDays = 0
+      let best: DailyRow | null = null
+      let worst: DailyRow | null = null
+      const items = new Map<string, PeriodItem & { seen: Set<string> }>()
+
+      for (const d of days) {
+        acc.total += d.total
+        acc.chartTotal += d.chartTotal
+        acc.priceDelta += d.priceDelta
+        acc.ipoDelta += d.ipoDelta
+        acc.nema += d.nema
+        acc.dividend += d.dividend
+        unmeasured += d.unmeasured
+        if (d.total > 0) winDays++
+        if (!best || d.total > best.total) best = d
+        if (!worst || d.total < worst.total) worst = d
+
+        for (const it of d.items) {
+          const k = `${it.source}:${it.symbol}`
+          const cur = items.get(k)
+          if (cur) {
+            cur.delta += it.delta
+            cur.seen.add(d.date)
+          } else {
+            items.set(k, {
+              key: k,
+              symbol: it.symbol,
+              kind: it.kind,
+              source: it.source,
+              delta: it.delta,
+              dayCount: 0,
+              seen: new Set([d.date]),
+            })
+          }
+        }
+      }
+
+      const last = days[days.length - 1]
+      const base = days[0].base
+      return {
+        key,
+        start: key,
+        end: bucket.end,
+        grain,
+        days,
+        ...acc,
+        winDays,
+        best,
+        worst,
+        value: last.value,
+        holdings: last.holdings,
+        base,
+        pct: base > 0 ? (acc.total / base) * 100 : null,
+        bulkEntry: days.some((d) => d.bulkEntry),
+        unmeasured,
+        items: [...items.values()]
+          .map(({ seen, ...rest }) => ({ ...rest, dayCount: seen.size }))
+          .filter((i) => Math.abs(i.delta) >= MIN_ITEM)
+          .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta)),
+      }
+    })
 }

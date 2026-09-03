@@ -118,6 +118,9 @@ export default function Dashboard() {
   // "toplam" sekmesi bir kullanıcı değil; sorgu UUID beklediği için boş geçilir
   const corporate = useCorporate(isTotal ? null : effectiveScope)
 
+  /** Kendi hesaplarındaki nakit — Nakit sayfasının toplamı (halka arz hariç) */
+  const { totals: cashTotals, accounts: cashAccounts } = useCash(isTotal ? null : effectiveScope)
+
   const holdings = useMemo(
     () =>
       computeHoldings(allTrades, bySymbol, {
@@ -149,11 +152,16 @@ export default function Dashboard() {
     for (const h of holdingsByAccount(allTrades, holdings)) {
       map.set(h.key, (map.get(h.key) ?? 0) + h.value)
     }
+    // Hesaptaki nakit de dağılıma katılır — Hesaplar sayfasıyla aynı kaynak
+    // (account_ledger). Katılmazsa nakit tutan hesap olduğundan küçük görünür.
+    for (const a of cashAccounts) {
+      if (a.balance) map.set(a.name, (map.get(a.name) ?? 0) + a.balance)
+    }
     return [...map.entries()]
       .map(([key, value]) => ({ key, label: key, value }))
       .filter((s) => s.value !== 0)
       .sort((a, b) => b.value - a.value)
-  }, [snapshotPositions, allTrades, holdings])
+  }, [snapshotPositions, allTrades, holdings, cashAccounts])
 
   /** Fon/sembol bazlı vergi sonrası toplam kazanç */
   const fundProfit = useMemo(
@@ -182,9 +190,6 @@ export default function Dashboard() {
   }, [fundProfit, showAllFunds])
 
   const netChange = change(last?.net_worth_try ?? 0, prev?.net_worth_try)
-
-  /** Kendi hesaplarındaki nakit — Nakit sayfasının toplamı (halka arz hariç) */
-  const { totals: cashTotals } = useCash(isTotal ? null : effectiveScope)
 
   /**
    * Snapshot'a bağlı olmayan açık borçlar — kredi kartı, fatura vb.

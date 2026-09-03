@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 
 export function PageHeader({
@@ -82,6 +82,99 @@ export function Badge({ children, tone = 'muted' }: { children: ReactNode; tone?
     >
       {children}
     </span>
+  )
+}
+
+export interface ActionItem {
+  label: string
+  /** Ne yapacağını tek satırda anlatır — menüde etiketin altında görünür */
+  hint?: string
+  tone?: 'default' | 'primary' | 'danger'
+  disabled?: boolean
+  onSelect: () => void
+}
+
+/**
+ * Tek düğme altında toplanan işlem listesi.
+ *
+ * Yan yana dizilen yarım düzine düğme yerine "İşlem" düğmesi açılır, ne
+ * yapacağını listeden seçersin. Sıradaki adım en üstte ve vurgulu durur;
+ * silme gibi geri dönüşü olmayanlar en altta, kırmızı.
+ *
+ * `items` boş gelirse hiçbir şey çizilmez — duruma göre işlem kalmadıysa
+ * ekranda boş bir düğme asılı kalmasın diye.
+ */
+export function ActionMenu({
+  label = 'İşlem',
+  items,
+}: {
+  label?: string
+  items: ActionItem[]
+}) {
+  const [open, setOpen] = useState(false)
+  const box = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (!box.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  if (!items.length) return null
+
+  const tones: Record<string, string> = {
+    default: 'text-ink',
+    primary: 'text-accent font-medium',
+    danger: 'text-neg',
+  }
+
+  return (
+    <div className="relative" ref={box}>
+      <button
+        type="button"
+        className="btn-ghost text-xs"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {label} <span className="ml-1 text-[10px]">▾</span>
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute left-0 z-30 mt-1 w-64 rounded-xl border border-border bg-surface shadow-2xl overflow-hidden"
+        >
+          {items.map((it) => (
+            <button
+              key={it.label}
+              type="button"
+              role="menuitem"
+              disabled={it.disabled}
+              className={`w-full text-left px-3 py-2 text-xs hover:bg-surface2 disabled:opacity-40 disabled:hover:bg-transparent ${
+                tones[it.tone ?? 'default']
+              }`}
+              onClick={() => {
+                setOpen(false)
+                it.onSelect()
+              }}
+            >
+              {it.label}
+              {it.hint && <span className="block text-[11px] text-muted font-normal">{it.hint}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 

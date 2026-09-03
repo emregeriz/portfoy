@@ -71,10 +71,16 @@ export function ipoStats(ipo: IpoRow, entries: IpoEntry[], price: number | null)
   const cost = totalAllocated * lot
   const holding = price != null ? openLot * price : null
   const unrealized = holding != null ? holding - openLot * lot : null
-  const refund = joined.reduce(
-    (s, e) => s + Math.max(Number(e.requested_lot) - Number(e.allocated_lot), 0) * lot,
-    0
-  )
+  // İade ancak dağıtım açıklandıktan sonra vardır. Talep aşamasında düşen
+  // lot doğal olarak 0'dır; bunu "hepsi iade edildi" saymak, para hâlâ
+  // blokedeyken hesaba dönmüş gibi görünmesine yol açıyordu.
+  const refund =
+    ipo.status === 'talep_verildi'
+      ? 0
+      : joined.reduce(
+          (s, e) => s + Math.max(Number(e.requested_lot) - Number(e.allocated_lot), 0) * lot,
+          0
+        )
 
   return {
     accountCount: joined.length,
@@ -372,6 +378,62 @@ export function useIpos(userId?: string | null) {
     [setEntry, settleSubscription, talepDateOf]
   )
 
+  /**
+   * Hangi hesaptan kaç lot istendiğini tek seferde yazar.
+   *
+   * Talep aşamasının kendi adımı budur: dağıtım açıklanmadan da hesap hesap
+   * lot girilebilir. Yalnızca katılım + istenen lot ve bunlara karşılık
+   * gelen bloke yazılır; düşen lot ve iade konusuna hiç girilmez — dağıtımı
+   * beklemeden "dağıtıldı" demek zorunda kalmayasın diye.
+   *
+   * Dönüşte hesap başına para ihtiyacı gelir; açığı olan varsa sayfa
+   * ardından "Talep karşılığı"nı sorar.
+   */
+  const setRequests = useCallback(
+    async (
+      ipo: IpoRow,
+      rows: { accountId: string; participated: boolean; lot: number }[],
+      userIdForRow: string
+    ): Promise<AccountNeed[]> => {
+      for (const r of rows) {
+        const existing = entries.find((e) => e.ipo_id === ipo.id && e.account_id === r.accountId)
+        const participated = r.participated
+        const requested_lot = participated ? r.lot : 0
+        if (existing) {
+          if (
+            existing.participated === participated &&
+            Number(existing.requested_lot) === requested_lot
+          ) {
+            continue
+          }
+          const { error } = await supabase
+            .from('ipo_entries')
+            .update({ participated, requested_lot })
+            .eq('id', existing.id)
+          if (error) throw new Error(error.message)
+        } else {
+          // Hiç katılmamış hesap için satır açmaya gerek yok
+          if (!participated) continue
+          const { error } = await supabase.from('ipo_entries').insert({
+            ipo_id: ipo.id,
+            account_id: r.accountId,
+            user_id: userIdForRow,
+            participated,
+            requested_lot,
+            allocated_lot: 0,
+          })
+          if (error) throw new Error(error.message)
+        }
+      }
+      // Bloke istenen lot × lot fiyatı; talep değişince yeniden yazılır.
+      // Çağıran yalnızca hesap ihtiyaçlarını kullanıyor; kaynak seçimleri
+      // "Talep karşılığı" modalı açıldığında ayrıca okunur.
+      const { needs } = await settleSubscription(ipo, talepDateOf(ipo.id, ipo))
+      return needs
+    },
+    [entries, settleSubscription, talepDateOf]
+  )
+
   /** Katılan tüm hesaplara aynı lot sayısını uygular. */
   const applyAllocation = useCallback(
     async (ipoId: string, lot: number) => {
@@ -435,6 +497,52 @@ export function useIpos(userId?: string | null) {
       return rows.length
     },
     [load]
+  )
+
+  /**
+   * Dağıtımı geri alır — arz yeniden "talep verildi" aşamasına döner.
+   *
+   * Dağıtım açıklanmadan "dağıtıldı" denip düşen lot 0 girildiğinde, istenen
+   * lotun tamamı iade olarak yazılır ve para hesaba dönmüş gibi görünür.
+   * Oysa para hâlâ arzda blokede. Bu işlev iade satırlarını siler, düşen
+   * lotları sıfırlar, durumu talebe çeker ve blokeyi yeniden yazar —
+   * istenen lotlar yerinde kalır, yeniden girmen gerekmez.
+   */
+  const revertDistribution = useCallback(
+    async (ipo: IpoRow) => {
+      const { data: fresh, error: readErr } = await supabase
+        .from('ipo_entries')
+        .select('*')
+        .eq('ipo_id', ipo.id)
+      if (readErr) throw new Error(readErr.message)
+      const rows = (fresh ?? []) as IpoEntry[]
+      if (rows.some((e) => Number(e.sold_lot ?? 0) > 0)) {
+        throw new Error('Önce satışları geri al — satılmış lotu olan arzın dağıtımı geri alınamaz.')
+      }
+
+      const { error: ledErr } = await supabase
+        .from('account_ledger')
+        .delete()
+        .eq('ipo_id', ipo.id)
+        .eq('kind', 'iade')
+      if (ledErr) throw new Error(ledErr.message)
+
+      const ids = rows.filter((e) => Number(e.allocated_lot) !== 0).map((e) => e.id)
+      if (ids.length) {
+        const { error } = await supabase.from('ipo_entries').update({ allocated_lot: 0 }).in('id', ids)
+        if (error) throw new Error(error.message)
+      }
+
+      const { error: stErr } = await supabase
+        .from('ipos')
+        .update({ status: 'talep_verildi', trade_start_date: null })
+        .eq('id', ipo.id)
+      if (stErr) throw new Error(stErr.message)
+
+      // Bloke tazelenir; load() bunun içinde çalışır
+      await settleSubscription({ ...ipo, status: 'talep_verildi' }, talepDateOf(ipo.id, ipo))
+    },
+    [settleSubscription, talepDateOf]
   )
 
   /**
@@ -658,8 +766,8 @@ export function useIpos(userId?: string | null) {
     blockedOf, blockedTotal,
     loading, error, reload: load, entriesOf,
     createIpo, updateIpo, removeIpo, setDefaultLot,
-    setEntry, toggleEntry, applyAllocation,
-    settleSubscription, talepDateOf, settleDistribution,
+    setEntry, toggleEntry, setRequests, applyAllocation,
+    settleSubscription, talepDateOf, settleDistribution, revertDistribution,
     sellEntries, unsellEntries, transfer,
     createIpoAccount, removeAccount,
   }
