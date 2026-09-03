@@ -1,0 +1,10 @@
+# Supabase CLI proje ayarları — yalnızca deploy'da okunan asgari dosya.
+#
+# custom-reminders bir kez --no-verify-jwt ile deploy edilince ayar projede
+# kalıcı oluyor ve CLI'de geri açacak bayrak yok. Diğer fonksiyonların hepsi
+# verify_jwt = true; kural burada yazılı dursun ki her deploy aynı yerden
+# gelsin.
+project_id = "wihfycgxdvazhgnnprhz"
+
+[functions.custom-reminders]
+verify_jwt = true

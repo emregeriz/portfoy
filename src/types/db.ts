@@ -321,9 +321,12 @@ export interface IpoFeedItem {
 }
 
 // --------------------------------------------------------------------
-// Serbest hatırlatıcılar — tarihi gelince e-posta gönderilir
+// Serbest hatırlatıcılar — tarihi gelince seçilen kanaldan gönderilir
 // --------------------------------------------------------------------
 export type RepeatMode = 'once' | 'monthly'
+
+/** Hatırlatmanın nereden geleceği; 'both' ikisine birden gönderir. */
+export type ReminderChannel = 'wa' | 'mail' | 'both'
 
 export interface Reminder {
   id: string
@@ -333,6 +336,7 @@ export interface Reminder {
   next_date: string
   send_time: string
   repeat_mode: RepeatMode
+  channel: ReminderChannel
   is_active: boolean
   last_sent_on: string | null
   created_at: string

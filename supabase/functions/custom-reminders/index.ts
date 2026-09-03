@@ -1,15 +1,20 @@
 // =====================================================================
 // custom-reminders — kullanıcının kendi yazdığı hatırlatmaları gönderir
 //
-// 15 dakikada bir çalışır; tarihi VE saati gelmiş aktif hatırlatmalar için
+// 5 dakikada bir çalışır; tarihi VE saati gelmiş aktif hatırlatmalar için
 // ayrı ayrı mesaj gönderir: başlık mesajın başlığı, açıklama gövdesi.
-// Saat çözünürlüğü cron aralığı kadardır — 14:30'a kurulan hatırlatma
-// 14:30-14:45 arasında gider.
+// Saat çözünürlüğü cron aralığı kadardır — 14:32'ye kurulan hatırlatma
+// 14:35'te gider.
 //
-// Kanal seçimi (bkz. supabase/whatsapp.sql):
-//   user_wa_keys'te numarası olan → WhatsApp (CallMeBot)
-//   olmayan                       → e-posta (Resend)
-// WhatsApp isteği hata verirse hatırlatma kaybolmasın diye mail'e düşülür.
+// Kanal hatırlatma başına seçilir (reminders.channel, bkz.
+// supabase/reminder-kanal.sql):
+//   wa    → yalnızca WhatsApp (CallMeBot). Numara tanımlı değilse ya da
+//           istek hata verirse hatırlatma kaybolmasın diye mail'e düşülür.
+//   mail  → yalnızca e-posta (Resend)
+//   both  → ikisi birden; biri gitmese diğeri ulaşır
+//
+// Hiçbir kanaldan gidemeyen hatırlatma olduğu gibi bırakılır: gönderildi
+// damgası vurulmaz, bir sonraki koşuda yeniden denenir.
 //
 // Gönderim sonrası:
 //   once    → hatırlatma pasife çekilir
@@ -23,6 +28,8 @@ const CORS = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
+type ReminderChannel = 'wa' | 'mail' | 'both'
+
 interface Reminder {
   id: string
   user_id: string
@@ -31,6 +38,7 @@ interface Reminder {
   next_date: string
   send_time: string
   repeat_mode: 'once' | 'monthly'
+  channel: ReminderChannel | null
   last_sent_on: string | null
 }
 
@@ -167,12 +175,21 @@ Deno.serve(async (req: Request) => {
   const errors: string[] = []
   const log: string[] = []
 
-  const { data, error } = await supabase
-    .from('reminders')
-    .select('id, user_id, title, body, next_date, send_time, repeat_mode, last_sent_on')
-    .eq('is_active', true)
-    .lte('next_date', today)
-    .or(`last_sent_on.is.null,last_sent_on.lt.${today}`)
+  const due = (cols: string) =>
+    supabase
+      .from('reminders')
+      .select(cols)
+      .eq('is_active', true)
+      .lte('next_date', today)
+      .or(`last_sent_on.is.null,last_sent_on.lt.${today}`)
+
+  const BASE = 'id, user_id, title, body, next_date, send_time, repeat_mode, last_sent_on'
+  let { data, error } = await due(`${BASE}, channel`)
+  // reminder-kanal.sql henüz çalıştırılmadıysa kolon yoktur; fonksiyon
+  // deploy sırasına takılmasın diye eski şemayla bir kez daha denenir.
+  if (error && /channel/i.test(error.message)) {
+    ;({ data, error } = await due(BASE))
+  }
 
   if (error) {
     return new Response(JSON.stringify({ ok: false, error: error.message }), {
@@ -181,7 +198,7 @@ Deno.serve(async (req: Request) => {
   }
 
   // Bugüne kurulanlarda saat de gelmiş olmalı; geçmiş tarihliler beklemez
-  const rows = ((data ?? []) as Reminder[]).filter(
+  const rows = ((data ?? []) as unknown as Reminder[]).filter(
     (r) => r.next_date < today || (r.send_time ?? '09:00').slice(0, 5) <= now
   )
   if (!rows.length) {
@@ -196,8 +213,8 @@ Deno.serve(async (req: Request) => {
     const hit = cache.get(userId)
     if (hit) return hit
 
-    // Numarası varsa asıl kanal WhatsApp. Tablo hiç kurulmamışsa sorgu
-    // hata verir, waRow null gelir ve mail yoluna devam edilir.
+    // Tablo hiç kurulmamışsa sorgu hata verir, waRow null gelir ve geriye
+    // yalnızca mail yolu kalır.
     const { data: waRow } = await supabase
       .from('user_wa_keys')
       .select('phone, apikey')
@@ -233,39 +250,54 @@ Deno.serve(async (req: Request) => {
     return result
   }
 
+  const sendMail = async (ch: Channel, r: Reminder): Promise<void> => {
+    if (!ch.to) throw new Error('e-posta adresi bulunamadı')
+    if (!ch.key) throw new Error('Resend anahtarı tanımlı değil')
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ch.key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: sender, to: [ch.to], subject: r.title, html: buildHtml(r) }),
+    })
+    const payload = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(payload?.message ?? `Resend HTTP ${res.status}`)
+  }
+
   let sent = 0
   for (const r of rows) {
     try {
       const ch = await channelFor(r.user_id)
-      let via = ''
+      // Kolon eklenmeden önce kurulmuş kayıtlar eski davranışı sürdürsün
+      const want: ReminderChannel = r.channel ?? 'wa'
+      const via: string[] = []
+      const fails: string[] = []
 
-      if (ch.wa) {
+      if (want !== 'mail') {
+        if (!ch.wa) fails.push('WhatsApp numarası tanımlı değil')
+        else {
+          try {
+            await sendWhatsApp(ch.wa, buildText(r))
+            via.push(`WhatsApp ${ch.wa.phone}`)
+          } catch (e) {
+            fails.push(`WhatsApp gitmedi (${msg(e)})`)
+          }
+        }
+      }
+
+      // 'mail' ve 'both' zaten mail ister; yalnız 'wa' seçiliyken de
+      // WhatsApp gidemediyse hatırlatma kaybolmasın diye mail'e düşülür.
+      if (want !== 'wa' || !via.length) {
         try {
-          await sendWhatsApp(ch.wa, buildText(r))
-          via = `WhatsApp ${ch.wa.phone}`
+          await sendMail(ch, r)
+          via.push(ch.to)
         } catch (e) {
-          // Hatırlatma kaybolmasın diye mail'e düşülür; hata yine raporlanır
-          errors.push(`${r.title}: WhatsApp gitmedi (${msg(e)}) — mail deneniyor`)
+          fails.push(`Mail gitmedi (${msg(e)})`)
         }
       }
 
-      if (!via) {
-        const { to, key } = ch
-        if (!to) {
-          errors.push(`${r.title}: e-posta adresi bulunamadı`)
-          continue
-        }
-        if (!key) throw new Error('Resend anahtarı tanımlı değil')
+      for (const f of fails) errors.push(`${r.title}: ${f}`)
 
-        const res = await fetch('https://api.resend.com/emails', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ from: sender, to: [to], subject: r.title, html: buildHtml(r) }),
-        })
-        const payload = await res.json().catch(() => null)
-        if (!res.ok) throw new Error(payload?.message ?? `Resend HTTP ${res.status}`)
-        via = to
-      }
+      // Hiçbiri gitmediyse kayda dokunulmaz — sonraki koşuda tekrar denenir
+      if (!via.length) continue
 
       // Tekrarlıysa bir sonraki aya taşı, tek seferlikse kapat
       const patch =
@@ -276,7 +308,7 @@ Deno.serve(async (req: Request) => {
       if (updErr) errors.push(`${r.title} güncellenemedi: ${updErr.message}`)
 
       sent++
-      log.push(`${via} → ${r.title}`)
+      log.push(`${via.join(' + ')} → ${r.title}`)
     } catch (e) {
       errors.push(`${r.title}: ${msg(e)}`)
     }

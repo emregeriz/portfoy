@@ -365,6 +365,45 @@ etkilenmez.
 | `/transactions` | Gelir/gider, aylık kategori grafiği ve **verdiğin borçlar** |
 | `/reminders` | Serbest hatırlatıcılar (profil menüsünden) |
 
+### Hatırlatıcılar
+
+Kurulum sırası — **SQL Editor**'de bu sırayla çalıştır:
+
+1. [`supabase/reminders.sql`](supabase/reminders.sql) — `reminders` tablosu, tarih + saat
+2. [`supabase/whatsapp.sql`](supabase/whatsapp.sql) — `user_wa_keys`; kendi numaran ve
+   CallMeBot apikey'in (numarayı rehbere ekle, WhatsApp'tan
+   "I allow callmebot to send me messages" yaz, dönen anahtarı gir)
+3. [`supabase/reminder-kanal.sql`](supabase/reminder-kanal.sql) — hatırlatma başına kanal seçimi
+4. [`supabase/cron.sql`](supabase/cron.sql) 5. bölümü — `custom-reminders-quarterly`
+   işini kurar; hatırlatmayı 5 dakikada bir kontrol eden tetikleyici budur
+
+Her hatırlatmada **Nereden gelsin** seçilir:
+
+| Seçim | Davranış |
+|---|---|
+| WhatsApp | Yalnızca WhatsApp. Numara tanımsızsa ya da istek hata verirse e-postaya düşülür |
+| E-posta | Yalnızca Resend üzerinden mail |
+| WhatsApp + e-posta | İkisi birden; biri gitmese diğeri ulaşır |
+
+Hiçbir kanaldan gidemeyen hatırlatma **gönderildi damgası almaz**, sonraki
+koşuda yeniden denenir. Saat çözünürlüğü cron aralığı kadardır: 14:32'ye
+kurulan hatırlatma 14:35'te düşer.
+
+Cron çalışıyor mu diye bakmak için:
+
+```sql
+select jobname, schedule, active from cron.job;
+select jobname, status, start_time
+from cron.job_run_details join cron.job using (jobid)
+where jobname = 'custom-reminders-quarterly'
+order by start_time desc limit 10;
+```
+
+WhatsApp gelmiyorsa suç genelde CallMeBot'tadır: ücretsiz servis "queued"
+dese de teslim etmeyebiliyor, aktivasyon zamanla düşüyor. Numarayı yeniden
+aktive edip yeni apikey'i `user_wa_keys`'e yaz — bu arada kanalı
+**WhatsApp + e-posta** seçmek hatırlatmanın kaybolmasını engeller.
+
 ### Kullanıcıya özel menü
 
 Üst menü `profiles.nav_hidden` dizisine bakar: içindeki anahtarlar o
