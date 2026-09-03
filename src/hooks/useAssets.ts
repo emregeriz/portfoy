@@ -45,5 +45,16 @@ export function useAssets() {
     [assets]
   )
 
-  return { assets, loading, reload: load, ensureAsset }
+  /**
+   * Kalemin stopaj oranını yazar. null = türün varsayılanı (fonda %17,5),
+   * 0 = stopaj yok. Katalog ortak olduğu için değişiklik o sembolün bütün
+   * işlemlerini etkiler — hisse senedi yoğun fonu bir kez işaretlemek yeter.
+   */
+  const setTaxRate = useCallback(async (id: string, rate: number | null) => {
+    const { error } = await supabase.from('assets').update({ tax_rate: rate }).eq('id', id)
+    if (error) throw new Error(error.message)
+    setAssets((prev) => prev.map((a) => (a.id === id ? { ...a, tax_rate: rate } : a)))
+  }, [])
+
+  return { assets, loading, reload: load, ensureAsset, setTaxRate }
 }

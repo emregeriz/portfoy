@@ -39,6 +39,12 @@ export interface Asset {
   symbol: string
   name: string | null
   kind: AssetKind
+  /**
+   * Satış kazancından kesilen stopaj oranı, kesir olarak (0,175 = %17,5).
+   * null ise türün varsayılanı geçerli: fonda %17,5, hissede 0. Hisse senedi
+   * yoğun fon TEFAS'ta fon görünür ama stopajsızdır — o ayrım buraya yazılır.
+   */
+  tax_rate: number | null
   created_at: string
 }
 
@@ -367,5 +373,5 @@ export interface Trade {
 
 export interface TradeWithRefs extends Trade {
   accounts: Pick<Account, 'id' | 'name' | 'type'> | null
-  assets: Pick<Asset, 'id' | 'symbol' | 'name' | 'kind'> | null
+  assets: Pick<Asset, 'id' | 'symbol' | 'name' | 'kind' | 'tax_rate'> | null
 }

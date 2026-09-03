@@ -458,7 +458,8 @@ export default function Dashboard() {
           {showNetLine && (
             <p className="mt-2 text-xs text-muted">
               Turuncu çizgi, o gün satılsaydı fonlardan %{(DEFAULT_TAX_RATE * 100).toFixed(1).replace('.', ',')}{' '}
-              stopaj kesildikten sonra cebe kalacak tutarı gösterir — hisselerden stopaj kesilmez.
+              stopaj kesildikten sonra cebe kalacak tutarı gösterir — hisselerden ve stopajsız
+              işaretlenmiş hisse senedi yoğun fonlardan kesinti yapılmaz.
               Noktalar işlem tarihlerinden geçer; ara günler için geçmiş fiyat tutulmuyor.
             </p>
           )}
@@ -537,8 +538,8 @@ export default function Dashboard() {
           )}
           <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs text-muted">
-              Her kalemin gerçekleşen ve açık kârı toplanır; fonlarda stopaj düşülür, hisselerde
-              vergi yoktur.
+              Her kalemin gerçekleşen ve açık kârı toplanır; fonlarda stopaj düşülür. Hisselerde
+              ve stopajsız işaretlenmiş hisse senedi yoğun fonlarda vergi yoktur.
             </p>
             <div className="flex items-center gap-2">
               <button

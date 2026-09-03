@@ -40,7 +40,7 @@ export default function Trades() {
   const isOwn = true
 
   const { accounts } = useAccounts()
-  const { assets, ensureAsset } = useAssets()
+  const { assets, ensureAsset, setTaxRate } = useAssets()
   const { bySymbol, latestDate } = usePrices()
 
   const trades = useTrades(effectiveScope)
@@ -66,6 +66,12 @@ export default function Trades() {
   const [side, setSide] = useState<TradeSide>('alis')
   /** Varlık türü — fonda küsuratlı pay olmadığı için canlı bilinmesi gerekiyor */
   const [kind, setKind] = useState<AssetKind>('fon')
+  /**
+   * Hisse senedi yoğun fon: TEFAS'ta fon görünür ama satış kazancından
+   * stopaj kesilmez. İşaret kalemin kendisine yazılır (assets.tax_rate),
+   * yani o fonun bütün işlemleri için geçerli olur.
+   */
+  const [taxFree, setTaxFree] = useState(false)
   const [qty, setQty] = useState('')
   const [unit, setUnit] = useState('')
   const [amount, setAmount] = useState('')
@@ -166,6 +172,7 @@ export default function Trades() {
     if (t === 'new') {
       setSide('alis')
       setKind('fon')
+      setTaxFree(false)
       setQty('')
       setUnit('')
       setAmount('')
@@ -177,6 +184,7 @@ export default function Trades() {
     } else {
       setSide(t.side)
       setKind((t.assets?.kind ?? 'fon') as AssetKind)
+      setTaxFree(t.assets?.tax_rate != null && Number(t.assets.tax_rate) === 0)
       setQty(String(t.quantity))
       setUnit(String(t.unit_price))
       setAmount(String(t.amount))
@@ -315,6 +323,12 @@ export default function Trades() {
     setSaving(true)
     try {
       const asset = await ensureAsset(symbol, kind)
+      // Stopaj muafiyeti kaleme yazılır; değişmediyse dokunulmaz
+      if (asset) {
+        const want = kind === 'fon' && taxFree ? 0 : null
+        const current = asset.tax_rate == null ? null : Number(asset.tax_rate)
+        if (want !== current) await setTaxRate(asset.id, want)
+      }
       const values = {
         user_id: user.id,
         account_id: tradeAccount || null,
@@ -451,7 +465,7 @@ export default function Trades() {
           title="Toplam vergi"
           value={totals.totalTax}
           tone={totals.totalTax > 0 ? 'neg' : 'neutral'}
-          hint={`Ödenen ${formatTRY(totals.realizedTax)} + ödenecek ${formatTRY(totals.potentialTax)} · %${(DEFAULT_TAX_RATE * 100).toFixed(1).replace('.', ',')}`}
+          hint={`Ödenen ${formatTRY(totals.realizedTax)} + ödenecek ${formatTRY(totals.potentialTax)} · fonda varsayılan %${(DEFAULT_TAX_RATE * 100).toFixed(1).replace('.', ',')}`}
         />
       </div>
 
@@ -833,6 +847,15 @@ export default function Trades() {
                 placeholder="DFI"
                 defaultValue={editing?.assets?.symbol ?? ''}
                 required
+                onChange={(e) => {
+                  // Katalogda kayıtlı kalemin türü ve stopaj durumu gelsin;
+                  // yoksa kutucuk boş kalır ve kaydederken kalem ezilmez
+                  const sym = e.target.value.trim().toUpperCase()
+                  const known = assets.find((a) => a.symbol.toUpperCase() === sym)
+                  if (!known) return
+                  setKind(known.kind)
+                  setTaxFree(known.tax_rate != null && Number(known.tax_rate) === 0)
+                }}
               />
               <datalist id="trade-symbols">
                 {assets.map((a) => (
@@ -855,6 +878,21 @@ export default function Trades() {
               </select>
             </div>
           </div>
+
+          {kind === 'fon' && (
+            <label className="flex items-start gap-2 text-xs text-muted">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={taxFree}
+                onChange={(e) => setTaxFree(e.target.checked)}
+              />
+              <span>
+                Hisse senedi yoğun fon — satış kazancından stopaj kesilmez. İşaret fonun
+                kendisine yazılır, o fondaki bütün işlemler için geçerli olur.
+              </span>
+            </label>
+          )}
 
           <div>
             <label className="label">Hesap</label>
