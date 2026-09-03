@@ -16,6 +16,13 @@ import { todayISO } from '../lib/calc'
  * temettü ve o gün gerçekleşen satışlar. Satışlar hesap hesap listelenir —
  * aynı kâğıdı farklı hesaplardan farklı fiyata satmış olabilirsin, kazanç
  * her hesabın kendi fiyatından ölçülür.
+ *
+ * "En çok oynayan" listesinde tutarın yanındaki yüzde **kâğıdın kendi
+ * günlük hareketidir**, gün kârının pozisyona oranı değil. İkisi satış olan
+ * günlerde birbirinden ayrılır: 190'dan açan kâğıdı 206'dan satıp gün 191'de
+ * kapanırsa kazancın büyük kısmı satış priminden gelir, kâğıt ise yalnızca
+ * %0,7 oynamıştır. Satış payı bu yüzden "satıştan +₺…" olarak ayrı yazılır;
+ * gün kârının gün başı pozisyona oranı tutarın üzerinde ipucu olarak durur.
  */
 /** Kırılımda başta görünen kalem sayısı — gerisi "daha fazla göster" ile açılır */
 const MOVERS_SHOWN = 10
@@ -193,6 +200,9 @@ export default function TodayReturn() {
               <div className="px-3 py-2 border-t border-border space-y-1.5 max-h-56 overflow-y-auto">
                 <div className="text-[11px] uppercase tracking-wide text-muted">
                   Bugün satılanlar
+                  <span className="ml-1 normal-case tracking-normal opacity-70">
+                    · toplama dahil
+                  </span>
                 </div>
                 {sales.map((s) => (
                   <div key={s.key} className="flex justify-between gap-3 text-xs">
@@ -230,7 +240,7 @@ export default function TodayReturn() {
                 <div className="text-[11px] uppercase tracking-wide text-muted">En çok oynayan</div>
                 {(showAllMovers ? movers : movers.slice(0, MOVERS_SHOWN)).map((m) => (
                   <div key={`${m.source}:${m.symbol}`} className="flex justify-between gap-3 text-xs">
-                    <span className="text-ink">
+                    <span className="text-ink min-w-0">
                       {m.symbol}
                       {m.source === 'ipo' && <span className="ml-1 text-muted">arz</span>}
                       {m.vsIpoPrice && (
@@ -241,11 +251,41 @@ export default function TodayReturn() {
                           ilk gün
                         </span>
                       )}
+                      {/* Yüzde kâğıdın kendi günlük hareketi; satış primi ayrı
+                          yazılır, yoksa "hisse bu kadar mı yükselmiş" sanılıyor */}
+                      {(m.pricePct !== null || m.saleDelta !== 0) && (
+                        <span className="block text-[11px] text-muted num">
+                          {m.pricePct !== null && (
+                            <span
+                              title={
+                                m.vsIpoPrice
+                                  ? 'Arz fiyatına göre günün fiyat hareketi'
+                                  : 'Önceki kapanışa göre günün fiyat hareketi'
+                              }
+                            >
+                              fiyat {formatPercent(m.pricePct)}
+                            </span>
+                          )}
+                          {m.saleDelta !== 0 && (
+                            <span title="Bugün sattığın paydan gelen kısım — yandaki toplamın içinde">
+                              {m.pricePct !== null && ' · '}
+                              satıştan {m.saleDelta >= 0 ? '+' : '−'}
+                              {formatTRY(Math.abs(m.saleDelta))}
+                            </span>
+                          )}
+                        </span>
+                      )}
                     </span>
-                    <span className={`num ${m.delta >= 0 ? 'text-pos' : 'text-neg'}`}>
+                    <span
+                      className={`num shrink-0 ${m.delta >= 0 ? 'text-pos' : 'text-neg'}`}
+                      title={
+                        m.pct !== null
+                          ? `Gün başı pozisyona göre ${formatPercent(m.pct)}`
+                          : undefined
+                      }
+                    >
                       {m.delta >= 0 ? '+' : '−'}
                       {formatTRY(Math.abs(m.delta))}
-                      {m.pct !== null && <span className="text-muted"> ({formatPercent(m.pct)})</span>}
                     </span>
                   </div>
                 ))}

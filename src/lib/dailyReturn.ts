@@ -172,6 +172,21 @@ export interface DailyRow {
   bulkEntry: boolean
   /** Grafiğe çizilen değer — toplu kayıt gününde yalnızca fon kalemleri */
   chartTotal: number
+  /**
+   * Sembolün o günkü saf fiyat hareketi — `source:symbol` anahtarıyla.
+   *
+   * Gün kârından ayrı durur: kâr, satış fiyatının önceki kapanışa göre
+   * primini de taşır, fiyat hareketi taşımaz. İkisi karıştığında "hisse
+   * bugün ne yaptı" sorusu cevapsız kalıyordu.
+   */
+  priceMoves: Record<string, DailyPriceMove>
+}
+
+/** Önceki kapanış → gün kapanışı; arzın ilk gününde referans arz fiyatıdır */
+export interface DailyPriceMove {
+  from: number
+  to: number
+  pct: number
 }
 
 export interface DailyInput {
@@ -478,8 +493,15 @@ export function computeDailyReturns(input: DailyInput): DailyRow[] {
     const hasPrices = pricedDays.has(day)
     const items: DailyItem[] = []
     const deltaBySymbol = new Map<string, number>()
+    const priceMoves: Record<string, DailyPriceMove> = {}
     let unmeasured = 0
     let base = 0
+
+    /** Kâğıdın o günkü fiyat hareketi — kârdan bağımsız kaydedilir */
+    const notePrice = (key: string, ref: number | null, close: number | null) => {
+      if (ref == null || close == null || !(ref > 0)) return
+      priceMoves[key] = { from: ref, to: close, pct: ((close - ref) / ref) * 100 }
+    }
 
     const push = (it: DailyItem) => {
       const ref = it.from != null && it.qty > 0 ? Math.abs(it.from * it.qty) : 0
@@ -519,6 +541,8 @@ export function computeDailyReturns(input: DailyInput): DailyRow[] {
       const ref = prevClose ?? pos.lotPrice
       const vsIpo = prevClose == null
       const close = priceOn(pos.assetId, day)
+      // Fiyatı elle girilen arzda besleme fiyatı güvenilmez — hareket yazılmaz
+      if (pos.manualPrice == null) notePrice(`ipo:${pos.code}`, ref, close)
 
       let soldQty = 0
       for (const l of soldToday) {
@@ -600,6 +624,8 @@ export function computeDailyReturns(input: DailyInput): DailyRow[] {
       if (qs > EPS && prev != null) base += qs * prev
 
       const ratio = ratioToday.get(assetId) ?? 1
+      // Bedelsiz/bölünme gününde iki fiyat kıyaslanamaz — hareket yazılmaz
+      if (ratio === 1) notePrice(`portfoy:${symbol}`, prev, close)
       if (ratio !== 1) {
         // Bedelsiz / bölünme günü: adet ve fiyat birlikte değişir, kalem
         // ayrıştırılmaz — gün toplu formülle ölçülür.
@@ -834,6 +860,7 @@ export function computeDailyReturns(input: DailyInput): DailyRow[] {
       ipoLots,
       bulkEntry,
       chartTotal,
+      priceMoves,
     })
   }
 
@@ -845,7 +872,17 @@ export interface DailyMover {
   symbol: string
   source: DailySource
   delta: number
+  /**
+   * Gün başı pozisyona göre getiri. Satış primini de taşıdığı için kâğıdın
+   * günlük yüzdesi DEĞİLDİR — onun için `pricePct`e bak.
+   */
   pct: number | null
+  /** Kâğıdın o günkü saf fiyat hareketi — önceki kapanış → gün kapanışı */
+  pricePct: number | null
+  /** Katkının o gün satılan paydan gelen kısmı */
+  saleDelta: number
+  /** Katkının elde tutulan / o gün alınan paydan gelen kısmı */
+  holdDelta: number
   /** Referans halka arz fiyatı — ilk işlem günü */
   vsIpoPrice: boolean
 }
@@ -854,19 +891,33 @@ export function moversOf(row: DailyRow | null | undefined): DailyMover[] {
   if (!row) return []
   const map = new Map<
     string,
-    { delta: number; base: number; vsIpo: boolean; source: DailySource; symbol: string }
+    {
+      delta: number
+      base: number
+      sale: number
+      hold: number
+      vsIpo: boolean
+      source: DailySource
+      symbol: string
+    }
   >()
   for (const it of row.items) {
     const key = `${it.source}:${it.symbol}`
     const cur = map.get(key) ?? {
       delta: 0,
       base: 0,
+      sale: 0,
+      hold: 0,
       vsIpo: false,
       source: it.source,
       symbol: it.symbol,
     }
     cur.delta += it.delta
     cur.base += it.from != null ? Math.abs(it.from * it.qty) : 0
+    // Satıştan gelen kısım ayrı durur: kâğıt düşerken bile satış primi
+    // toplamı yukarı çekebiliyor, ikisi ayrışmadan tablo yanıltıyor
+    if (it.part === 'satis') cur.sale += it.delta
+    else cur.hold += it.delta
     cur.vsIpo = cur.vsIpo || !!it.vsIpoPrice
     map.set(key, cur)
   }
@@ -876,6 +927,9 @@ export function moversOf(row: DailyRow | null | undefined): DailyMover[] {
       source: m.source,
       delta: m.delta,
       pct: m.base > 0 ? (m.delta / m.base) * 100 : null,
+      pricePct: row.priceMoves[`${m.source}:${m.symbol}`]?.pct ?? null,
+      saleDelta: m.sale,
+      holdDelta: m.hold,
       vsIpoPrice: m.vsIpo,
     }))
     .filter((m) => Math.abs(m.delta) >= MIN_ITEM)
