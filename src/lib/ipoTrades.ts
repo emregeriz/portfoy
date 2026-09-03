@@ -23,7 +23,10 @@ export function ipoVirtualTrades(
     if (!code || ipo.status === 'talep_verildi' || ipo.status === 'iptal') continue
     const lotPrice = Number(ipo.lot_price ?? 0)
     const buyDate = ipo.trade_start_date ?? ipo.ipo_date ?? ipo.created_at.slice(0, 10)
-    const assetRef = { id: `ipo-${code}`, symbol: code, name: ipo.name, kind: 'hisse' as const }
+    // Halka arz hissesi: satış kazancından stopaj kesilmez, oran türden gelir
+    const assetRef = {
+      id: `ipo-${code}`, symbol: code, name: ipo.name, kind: 'hisse' as const, tax_rate: null,
+    }
 
     for (const e of entries) {
       if (e.ipo_id !== ipo.id || !e.participated) continue

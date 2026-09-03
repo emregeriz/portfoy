@@ -13,6 +13,18 @@ export const DEFAULT_TAX_RATE = 0.175
 /** Bu türlerin satış kazancından stopaj kesilir */
 const isTaxable = (kind: AssetKind) => kind === 'fon'
 
+/**
+ * Kalemin stopaj oranı. Varlığa oran yazılmışsa o geçerli; yazılmamışsa
+ * türün varsayılanı kullanılır. Hisse senedi yoğun fon TEFAS'ta fon
+ * görünür ama satış kazancından stopaj kesilmez — assets.tax_rate = 0
+ * yazılarak ayrılır (bkz. supabase/fon-stopaj.sql).
+ */
+function rateOf(kind: AssetKind, assetRate: number | null | undefined, fallback: number) {
+  const own = assetRate == null ? null : Number(assetRate)
+  if (own != null && Number.isFinite(own)) return own
+  return isTaxable(kind) ? fallback : 0
+}
+
 export interface Holding {
   symbol: string
   /**
@@ -163,8 +175,8 @@ export function computeHoldings(
       (a, b) => a.trade_date.localeCompare(b.trade_date) || a.created_at.localeCompare(b.created_at)
     )
     const kind = (sorted[0].assets?.kind ?? 'diger') as AssetKind
-    // Hisse satışından stopaj kesilmez — vergi yalnızca fonlarda işler
-    const rate = isTaxable(kind) ? taxRate : 0
+    // Hisse satışından stopaj kesilmez; fonda kalemin kendi oranı varsa o geçerli
+    const rate = rateOf(kind, sorted[0].assets?.tax_rate, taxRate)
 
     let qty = 0
     let costBasis = 0
@@ -395,7 +407,8 @@ export function holdingsSeries(
   const qty = new Map<string, number>()
   const cost = new Map<string, number>()
   const lastPrice = new Map<string, number>()
-  const kindOf = new Map<string, AssetKind>()
+  /** Sembol → stopaj oranı; kaleme oran yazılmışsa türün varsayılanını ezer */
+  const rateOfSymbol = new Map<string, number>()
   const points: ValuePoint[] = []
 
   const snapshot = (date: string) => {
@@ -409,8 +422,8 @@ export function holdingsSeries(
       const v = p != null ? q * p : c
       totalCost += c
       totalValue += v
-      // Stopaj sembol bazında ve yalnızca fonlarda kesilir
-      if (isTaxable(kindOf.get(sym) ?? 'diger')) tax += Math.max(0, v - c) * taxRate
+      // Stopaj sembol bazında: kaleme oran yazılmışsa o, yoksa türün varsayılanı
+      tax += Math.max(0, v - c) * (rateOfSymbol.get(sym) ?? 0)
     }
     const netValue = totalValue - tax
     // Aynı güne birden fazla işlem düşerse tek nokta kalsın
@@ -446,7 +459,10 @@ export function holdingsSeries(
 
     applyActionsUntil(t.trade_date)
     lastPrice.set(sym, Number(t.unit_price) * rate)
-    kindOf.set(sym, (t.assets?.kind ?? 'diger') as AssetKind)
+    rateOfSymbol.set(
+      sym,
+      rateOf((t.assets?.kind ?? 'diger') as AssetKind, t.assets?.tax_rate, taxRate)
+    )
     const q = qty.get(sym) ?? 0
     const c = cost.get(sym) ?? 0
 
