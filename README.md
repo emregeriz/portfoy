@@ -247,6 +247,40 @@ npm run price:set -- --symbol DFI --date 2026-08-19 --price 5,486123        # ku
 npm run price:set -- --symbol DFI,THF --date 2026-08-19 --price 5,48;2,50 --yes
 ```
 
+### Fonda tam pay — küsuratlı adet olmaz
+
+Serbest fonda küsuratlı pay satın alınmaz. Emri TL cinsinden verirsin, aracı
+kurum o tutarla alınabilen **tam pay** kadar alır, artan parayı hesaba iade
+eder: 1,25 TLY istesen 1 adet verir, kalanı geri yatar.
+
+Formda **"Emir tutarı (tam pay hesabı)"** kutusu bunu hesaplar — emir tutarını
+ve birim fiyatı yaz, adet ile iade kendiliğinden çıksın. Adedi elle küsuratlı
+yazarsan tür *fon* iken kayıt kabul edilmez; alanın altındaki *"tam paya indir"*
+kısayolu adedi aşağı yuvarlar ve tutarı tazeler.
+
+Fon **valörlüdür**: emri verdiğin günün fiyatından değil, valör günü
+fiyatından alırsın (Midas'ta genelde 2 iş günü). İşlemi emir günü ve o günün
+fiyatıyla girersen adet küsuratlı çıkar, üstelik aradaki günlerde hiç sahip
+olmadığın paydan günlük kâr yazılır. Doğrusu: işlemi **valör günü** ve o günün
+fiyatıyla yaz.
+
+Geçmişte küsuratlı kaydedilmiş fon alımlarını onarmak için:
+
+```bash
+npm run fix:fon -- --user eposta@ornek.com                      # kuru çalışma
+npm run fix:fon -- --user eposta@ornek.com --apply              # yazar
+npm run fix:fon -- --user eposta@ornek.com --valor 1            # valör 1 gün
+npm run fix:fon -- --user eposta@ornek.com --fiyat-tarihi 2026-08-31
+```
+
+Betik valör günü fiyatını `asset_prices`ten okur, `floor(tutar ÷ fiyat)` tam
+payı bulur, işlemi o adet/fiyat/tarihe çeker ve işleme bağlı `alim` satırını da
+düzeltir — artan para hesapta nakit olarak kalır, iadenin ta kendisi. Kuru
+çalışma sonunda düzeltilmiş adet ve ortalama maliyeti yazar; aracı kurum
+ekranıyla birebir tutuyorsa `--apply` ver. Emir gününü korumak için
+`--tarih-koru` (adet düzelir, günlük kârdaki sahte hareket kalır),
+tek fonu hedeflemek için `--sembol THF`.
+
 ## 1d. Halka arz akışı
 
 Halka arza kendi hesabının yanı sıra yakınlarının hesaplarından da giriyorsan,
@@ -263,7 +297,7 @@ Kurulum: **SQL Editor** → [`supabase/ipo-v2.sql`](supabase/ipo-v2.sql), ardın
 |---|---|
 | **+ Hesap ekle** | Halka arz hesabı açılır (kimin hesabı olduğunu nota yaz) |
 | **+ Arz Ekle** | Arz adı, BIST kodu, lot fiyatı ve **hesap başına istenen lot** girilir; aşağıdaki listede işaretlediğin her hesaba bu lot doğrudan yazılır |
-| **Talep karşılığı** | Kaydedince kendiliğinden açılır: istenen lot × lot fiyatı her hesaptan **bloke** edilir, parasının yetmediği hesap için "hesaptaki parayla / kendi hesabımdan / dışarıdan" sorulur |
+| **Talep karşılığı** | Kaydedince kendiliğinden açılır: istenen lot × lot fiyatı her hesaptan **bloke** edilir, parasının yetmediği hesap için "hesaptaki parayla / kendi hesabımdan / dışarıdan" sorulur. Seçim yapılmazsa açık **açılış bakiyesi** olarak yazılır — hesap eksiye düşmez |
 | **Dağıtıldı** | Tek kutuya eşit lot yazarsın (örn. 30 → herkese 30) ya da hesap hesap girersin. Kaydedince (istenen − düşen) × lot fiyatı her hesaba **iade** olarak yatar |
 | **İşlem görmeye başladı** | İlk işlem gününü girersin. Bugün/geçmişse fiyat hemen çekilir; ileri tarihse o sabah **10:01**'de otomatik çekilir |
 | **Sat** | Hesapları toplu işaretleyip tek fiyattan ya da satır satır ayrı ayrı satarsın. Gelir o hesabın bakiyesine yazılır |
@@ -289,10 +323,18 @@ Hiç lot düşmezse ikisi birbirini götürür ve bakiye değişmez — hesapta 
 duran parayla arza girmenin doğru karşılığı budur. Bloke tarafı yazılmazsa iade
 yoktan var olmuş para gibi görünür ve bakiye iade kadar şişer.
 
+Bloke hesabı **eksiye düşürmez**. Kayıtlı para talebi karşılamıyorsa fark, arza
+bağlı bir `giris` satırıyla "kayıt öncesi hesap bakiyesi" olarak yazılır — onarım
+betiğiyle aynı varsayım: para hesapta vardı, yalnızca defterde yoktu. Parayı
+aslında kendi hesabından attıysan "Talep karşılığı" ekranında "kendi hesabımdan"ı
+seç; açılış satırı silinir, yerine aktarım çifti yazılır.
+
 `cikis`ten farkı: `cikis` para sistemden tamamen çıktı demektir ve net varlığı
 azaltır. `talep` ise para hâlâ senin, yalnızca dağıtıma kadar aracı kurumda
 bloke. Dashboard bunu **"arzda bloke"** satırıyla toplam varlığına geri ekler,
-Halka Arz sayfası da ayrı bir kartta gösterir.
+Halka Arz sayfası ayrı bir kartta gösterir. Hesaplar sayfasında da hesabın
+**Hisse / Arz** sütununda "bekleyen arz" olarak durur ve hesabın toplamına
+sayılır — talep verdiğin gün hesap o kadar küçülmüş görünmez.
 
 Hesabın parası talebi karşılamıyorsa "Talep karşılığı" ekranı açığı hesap hesap
 gösterir ve kaynağını sorar:
@@ -331,6 +373,8 @@ hesapta zaten vardı, sadece kayda geçmemişti. Açılış girişi istemiyorsan
   hesap hesap değil tek satır
 - **Dashboard → Arzda bloke** — talebi verilmiş, dağıtımı beklenen para; hesaptan
   düşmüştür ama senindir, toplam varlığa sayılır
+- **Hesaplar → Hisse / Arz** — aynı bloke hesap hesap: satırı açınca bekleyen arz,
+  istenen lot, lot fiyatı ve bloke tutar görünür; hesabın toplamına ve payına girer
 
 ## 2. Güvenlik modeli
 
@@ -427,4 +471,5 @@ npm run check:prices  # fiyat geçmişi sağlığı (salt okunur)
 npm run check:daily -- --user eposta@ornek.com   # günlük kâr defteri (salt okunur)
 npm run fix:ipo -- --user eposta@ornek.com      # arz talep blokelerini onar (kuru çalışma)
 npm run fix:trade -- --user eposta@ornek.com   # işlemleri nakde işle (kuru çalışma)
+npm run fix:fon -- --user eposta@ornek.com     # küsuratlı fon alımlarını tam paya oturt (kuru çalışma)
 ```

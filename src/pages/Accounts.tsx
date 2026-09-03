@@ -5,6 +5,7 @@ import { usePrices } from '../hooks/usePrices'
 import { useTrades } from '../hooks/useTrades'
 import { useIpos } from '../hooks/useIpos'
 import { ipoVirtualTrades } from '../lib/ipoTrades'
+import { pendingRequests, type PendingRequest } from '../lib/ipoFunding'
 import { supabase } from '../lib/supabase'
 import { Badge, Card, Empty, ErrorBox, Modal, PageHeader, Spinner } from '../components/ui'
 import { CURRENCIES, formatNumber, formatPercent, formatTRY, parseAmount } from '../lib/currency'
@@ -31,6 +32,9 @@ const TYPES: { value: AccountType; label: string }[] = [
 /** Hesaptaki açık pozisyonların güncel değeri; fiyatı yoksa maliyetiyle sayılır */
 const stockValueOf = (holdings: Holding[]) =>
   holdings.filter((h) => h.quantity > 0).reduce((s, h) => s + (h.value ?? h.costBasis), 0)
+
+/** Dağıtımı beklenen arzlarda bu hesaptan bloke duran para */
+const blockedOf = (pending: PendingRequest[]) => pending.reduce((s, p) => s + p.blocked, 0)
 
 /** Bir hesabın alım/satım defterinden türeyen hisse pozisyonları */
 function HoldingsPanel({ holdings }: { holdings: Holding[] }) {
@@ -110,11 +114,71 @@ function HoldingsPanel({ holdings }: { holdings: Holding[] }) {
   )
 }
 
+/**
+ * Dağıtımı beklenen arz talepleri. Para nakitten çıktı ama hisse henüz
+ * düşmedi — aracı kurumda bloke bekliyor. Hesabın toplamına bu tutar da
+ * girer, yoksa talep verilen gün hesap o kadar küçülmüş görünür.
+ */
+function PendingPanel({ pending }: { pending: PendingRequest[] }) {
+  const total = blockedOf(pending)
+  return (
+    <div className="space-y-2">
+      <table className="w-full">
+        <thead>
+          <tr>
+            <th className="th">Bekleyen arz</th>
+            <th className="th text-right">İstenen lot</th>
+            <th className="th text-right">Lot fiyatı</th>
+            <th className="th text-right">Talep tarihi</th>
+            <th className="th text-right">Bloke</th>
+          </tr>
+        </thead>
+        <tbody>
+          {pending.map((p) => (
+            <tr key={p.ipoId}>
+              <td className="td">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">{p.code ?? p.name}</span>
+                  <Badge tone="warn">dağıtım bekleniyor</Badge>
+                </div>
+                {p.code && <div className="text-xs text-muted truncate max-w-[320px]">{p.name}</div>}
+              </td>
+              <td className="td text-right num">{formatNumber(p.requestedLot, 0)}</td>
+              <td className="td text-right num text-muted">
+                {p.lotPrice > 0 ? formatTRY(p.lotPrice) : '—'}
+              </td>
+              <td className="td text-right text-muted">{p.date ?? '—'}</td>
+              <td className="td text-right num">
+                {p.blocked > 0 ? (
+                  <span className="text-amber-600 dark:text-amber-400">{formatTRY(p.blocked)}</span>
+                ) : (
+                  <span
+                    className="text-muted"
+                    title="Bu arzın blokesi deftere yazılmamış — Halka Arz sayfasında “Talep karşılığı” ile yaz"
+                  >
+                    bloke yok
+                  </span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="text-xs text-muted">
+        Arzda bloke <span className="num text-ink">{formatTRY(total)}</span> — talep verilince
+        nakitten düştü; dağıtım açıklanınca düşen lot hisse olur, kalanı iade olarak nakde döner.
+      </p>
+    </div>
+  )
+}
+
 interface TableProps {
   accounts: Account[]
   /** Hesaptaki nakit — account_ledger toplamı */
   cash: Record<string, number>
   holdingsMap: Map<string, Holding[]>
+  /** Dağıtımı beklenen arz talepleri — hesap bazında */
+  pendingMap: Map<string, PendingRequest[]>
   openRows: Set<string>
   onToggle: (id: string) => void
   onEdit: (a: Account) => void
@@ -126,13 +190,16 @@ function AccountTable({
   accounts,
   cash,
   holdingsMap,
+  pendingMap,
   openRows,
   onToggle,
   onEdit,
   onDelete,
   emptyText,
 }: TableProps) {
-  const rowTotal = (id: string) => (cash[id] ?? 0) + stockValueOf(holdingsMap.get(id) ?? [])
+  // Nakit + hisse + arzda bloke: üçü de hesabın parası
+  const rowTotal = (id: string) =>
+    (cash[id] ?? 0) + stockValueOf(holdingsMap.get(id) ?? []) + blockedOf(pendingMap.get(id) ?? [])
   const grand = accounts.reduce((s, a) => s + rowTotal(a.id), 0)
   const totalCash = accounts.reduce((s, a) => s + (cash[a.id] ?? 0), 0)
   const totalStocks = grand - totalCash
@@ -147,7 +214,9 @@ function AccountTable({
           <th className="th">Tür</th>
           <th className="th">Para Birimi</th>
           <th className="th text-right">Nakit</th>
-          <th className="th text-right">Hisse Değeri</th>
+          <th className="th text-right" title="Açık pozisyonlar + dağıtımı beklenen arz talepleri">
+            Hisse / Arz
+          </th>
           <th className="th text-right">Pay</th>
           <th className="th"></th>
         </tr>
@@ -155,10 +224,15 @@ function AccountTable({
       <tbody>
         {accounts.map((a) => {
           const holdings = holdingsMap.get(a.id) ?? []
+          const pending = pendingMap.get(a.id) ?? []
           const openCount = holdings.filter((h) => h.quantity > 0).length
           const sv = stockValueOf(holdings)
+          const blocked = blockedOf(pending)
           const expanded = openRows.has(a.id)
           const total = rowTotal(a.id)
+          const parts: string[] = []
+          if (holdings.length > 0) parts.push(`${openCount} hisse`)
+          if (pending.length > 0) parts.push(`${pending.length} arz talebi`)
           return (
             <Fragment key={a.id}>
               <tr className="hover:bg-surface2/50">
@@ -179,11 +253,20 @@ function AccountTable({
                     </span>
                   )}
                 </td>
-                <td className="td text-right num">{formatTRY(cash[a.id] ?? 0)}</td>
+                <td
+                  className={`td text-right num ${(cash[a.id] ?? 0) < -0.005 ? 'text-neg' : ''}`}
+                  title={
+                    (cash[a.id] ?? 0) < -0.005
+                      ? 'Talep blokesi kayıtlı parayı aşıyor — Halka Arz sayfasında arzı açıp "Düzelt"e bas'
+                      : undefined
+                  }
+                >
+                  {formatTRY(cash[a.id] ?? 0)}
+                </td>
                 <td className="td text-right whitespace-nowrap">
-                  {holdings.length > 0 ? (
+                  {parts.length > 0 ? (
                     <button className="btn-ghost text-xs num" onClick={() => onToggle(a.id)}>
-                      {formatTRY(sv)} · {openCount} hisse {expanded ? '▴' : '▾'}
+                      {formatTRY(sv + blocked)} · {parts.join(' · ')} {expanded ? '▴' : '▾'}
                     </button>
                   ) : (
                     <span className="text-muted">—</span>
@@ -205,8 +288,9 @@ function AccountTable({
               </tr>
               {expanded && (
                 <tr>
-                  <td colSpan={7} className="bg-surface2/30 px-4 py-3">
-                    <HoldingsPanel holdings={holdings} />
+                  <td colSpan={7} className="bg-surface2/30 px-4 py-3 space-y-4">
+                    {holdings.length > 0 && <HoldingsPanel holdings={holdings} />}
+                    {pending.length > 0 && <PendingPanel pending={pending} />}
                   </td>
                 </tr>
               )}
@@ -296,6 +380,17 @@ export default function Accounts() {
     return map
   }, [tradeRows, bySymbol, ipoData.ipos, ipoData.entries, ipoData.accounts])
 
+  /** Dağıtımı beklenen arz talepleri — para nakitten düştü, hisse henüz yok */
+  const pendingMap = useMemo(() => {
+    const map = new Map<string, PendingRequest[]>()
+    for (const p of pendingRequests(ipoData.ipos, ipoData.entries, ipoData.ledger)) {
+      const list = map.get(p.accountId)
+      if (list) list.push(p)
+      else map.set(p.accountId, [p])
+    }
+    return map
+  }, [ipoData.ipos, ipoData.entries, ipoData.ledger])
+
   const regular = useMemo(() => accounts.filter((a) => !a.is_ipo), [accounts])
   const ipoAccounts = useMemo(() => accounts.filter((a) => a.is_ipo), [accounts])
 
@@ -368,6 +463,7 @@ export default function Accounts() {
             accounts={regular}
             cash={cash}
             holdingsMap={holdingsMap}
+            pendingMap={pendingMap}
             openRows={openRows}
             onToggle={toggleRow}
             onEdit={setModal}
@@ -383,7 +479,7 @@ export default function Accounts() {
             <h2 className="text-lg font-semibold">Halka Arz Hesapları</h2>
             <p className="text-sm text-muted">
               Aile ve tanıdık hesapları — nakit Halka Arz sayfasındaki defterden, hisseler
-              alım/satım kayıtlarından gelir.
+              alım/satım kayıtlarından gelir; dağıtımı beklenen talepler bloke olarak sayılır.
             </p>
           </div>
           <Card className="p-0 overflow-x-auto">
@@ -391,6 +487,7 @@ export default function Accounts() {
               accounts={ipoAccounts}
               cash={cash}
               holdingsMap={holdingsMap}
+              pendingMap={pendingMap}
               openRows={openRows}
               onToggle={toggleRow}
               onEdit={setModal}
