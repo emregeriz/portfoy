@@ -35,9 +35,10 @@ type KindFilter = 'gunluk' | 'nema' | 'tumu'
 export default function Cash() {
   const { user } = useAuth()
   const {
-    accounts, ledger, totals, canWrite, loading, error,
+    accounts, ledger, nameOf, totals, canWrite, loading, error,
     deposit, withdraw, transfer, removeMove, setNemaRate, recalcNema, ensureAccounts,
-  } = useCash(user?.id)
+    // Arz hesapları da listeye girer: paraları senin, aralarında aktarım yapılabilmeli
+  } = useCash(user?.id, { includeIpo: true })
 
   const [modal, setModal] = useState<ModalState>(null)
   const [formError, setFormError] = useState<string | null>(null)
@@ -54,17 +55,55 @@ export default function Cash() {
   const [filterAccount, setFilterAccount] = useState('')
   const [filterKind, setFilterKind] = useState<KindFilter>('gunluk')
   const [showAll, setShowAll] = useState(false)
+  const [showIpo, setShowIpo] = useState(true)
 
   const activeAccounts = useMemo(() => accounts.filter((a) => a.is_active), [accounts])
-  const accountName = (id: string) => accounts.find((a) => a.id === id)?.name ?? '—'
+  /** Kendi yatırım/banka hesapların */
+  const ownAccounts = useMemo(() => activeAccounts.filter((a) => !a.is_ipo), [activeAccounts])
+  /** Halka arz hesapları — ayrı grupta durur ki liste kalabalıklaşmasın */
+  const ipoAccounts = useMemo(() => activeAccounts.filter((a) => a.is_ipo), [activeAccounts])
+  /** Düğmelerin varsayılanı kendi hesabın olsun */
+  const defaultAccount = ownAccounts[0] ?? activeAccounts[0]
+  const accountName = (id: string) => nameOf.get(id) ?? '—'
 
+  // Hazır hesap önerileri kendi hesaplarına bakar: "Midas · Yaren" adında bir
+  // arz hesabı varken kendi Midas'ın eksik sayılmaya devam etsin.
   const missingPresets = useMemo(
     () =>
       PRESETS.filter(
-        (p) => !accounts.some((a) => a.name.toLocaleLowerCase('tr').includes(p.key))
+        (p) => !accounts.some((a) => !a.is_ipo && a.name.toLocaleLowerCase('tr').includes(p.key))
       ),
     [accounts]
   )
+
+  /**
+   * Hesap seçenekleri — arz hesapları `optgroup` altında toplanır, böylece
+   * kendi hesabınla arz hesabı arasında aktarım tek listeden yapılabilir.
+   */
+  const accountOptions = (exclude?: string, withBalance = true) => {
+    const label = (a: CashAccount) => (withBalance ? `${a.name} · ${formatTRY(a.balance)}` : a.name)
+    const ipo = ipoAccounts.filter((a) => a.id !== exclude)
+    return (
+      <>
+        {ownAccounts
+          .filter((a) => a.id !== exclude)
+          .map((a) => (
+            <option key={a.id} value={a.id}>
+              {label(a)}
+            </option>
+          ))}
+        {ipo.length > 0 && (
+          <optgroup label="Halka arz hesapları">
+            {ipo.map((a) => (
+              <option key={a.id} value={a.id}>
+                {label(a)}
+              </option>
+            ))}
+          </optgroup>
+        )}
+      </>
+    )
+  }
 
   /** Bugünkü bakiyeler aynı oranla dursa ay sonunda ne kazandırır */
   const monthlyEstimate = useMemo(
@@ -147,6 +186,70 @@ export default function Cash() {
     void guard(() => setNemaRate(modal.account.id, parseTRInput(rate), nemaStart || null))
   }
 
+  /**
+   * Bir hesabın bakiye satırı. Kendi hesapların ve arz hesapları aynı
+   * biçimde çizilir — ikisi de senin paran, aralarında aktarım yapılabilir.
+   */
+  const accountRow = (a: CashAccount) => {
+    const pct = Number(a.nema_rate ?? 0)
+    return (
+      <tr key={a.id} className="hover:bg-surface2/50">
+        <td className="td">
+          <div className="font-medium">{a.name}</div>
+          <div className="text-xs text-muted">
+            {a.lastMove
+              ? `Son hareket · ${format(parseISO(a.lastMove.date), 'd MMM yyyy', { locale: tr })}`
+              : 'Hareket yok'}
+          </div>
+        </td>
+        <td className="td">
+          {pct > 0 ? (
+            <Badge tone="accent">%{formatRate(pct)} yıllık</Badge>
+          ) : (
+            <span className="text-xs text-muted">—</span>
+          )}
+        </td>
+        <td className={`td text-right num ${a.balance > 0 ? 'text-ink' : 'text-muted'}`}>
+          {formatTRY(a.balance)}
+        </td>
+        <td className={`td text-right num ${a.todayNema > 0 ? 'text-pos' : 'text-muted'}`}>
+          {a.todayNema > 0 ? `+${formatTRY(a.todayNema)}` : '—'}
+        </td>
+        <td className="td text-right num text-muted">
+          {pct > 0 && a.balance > 0
+            ? formatTRY(projectNema(a.balance, pct, 30))
+            : '—'}
+        </td>
+        <td className="td text-right whitespace-nowrap">
+          {canWrite && (
+            <div className="inline-flex gap-1">
+              <button className="btn-ghost text-xs" onClick={() => openMove('giris', a.id)}>
+                Giriş
+              </button>
+              <button
+                className="btn-ghost text-xs"
+                onClick={() => openMove('cikis', a.id)}
+                disabled={a.balance <= 0}
+              >
+                Çıkış
+              </button>
+              <button
+                className="btn-ghost text-xs"
+                onClick={() => openTransfer(a.id)}
+                disabled={a.balance <= 0 || activeAccounts.length < 2}
+              >
+                Aktar
+              </button>
+              <button className="btn-ghost text-xs" onClick={() => openNema(a)}>
+                Nema
+              </button>
+            </div>
+          )}
+        </td>
+      </tr>
+    )
+  }
+
   const del = async (id: string) => {
     const row = ledger.find((l) => l.id === id)
     if (!row) return
@@ -165,15 +268,15 @@ export default function Cash() {
     <div className="space-y-5">
       <PageHeader
         title="Nakit"
-        subtitle="Hesaplardaki para, giriş / çıkış hareketleri ve günlük nemalandırma"
+        subtitle="Tüm hesaplardaki para — arz hesapları dahil — giriş / çıkış, aktarım ve nemalandırma"
         actions={
           canWrite &&
-          activeAccounts.length > 0 && (
+          defaultAccount && (
             <>
-              <button className="btn-ghost" onClick={() => openTransfer(activeAccounts[0].id)}>
+              <button className="btn-ghost" onClick={() => openTransfer(defaultAccount.id)}>
                 Aktar
               </button>
-              <button className="btn-primary" onClick={() => openMove('giris', activeAccounts[0].id)}>
+              <button className="btn-primary" onClick={() => openMove('giris', defaultAccount.id)}>
                 + Para girişi
               </button>
             </>
@@ -188,7 +291,11 @@ export default function Cash() {
         <StatCard
           title="Toplam Nakit"
           value={totals.cash}
-          hint={`${activeAccounts.length} hesap`}
+          hint={
+            ipoAccounts.length > 0
+              ? `${ownAccounts.length} hesap + ${ipoAccounts.length} arz hesabı (${formatTRY(totals.ipoCash)})`
+              : `${ownAccounts.length} hesap`
+          }
         />
         <StatCard
           title="Bugünkü Nema"
@@ -258,65 +365,25 @@ export default function Cash() {
                 </tr>
               </thead>
               <tbody>
-                {activeAccounts.map((a) => {
-                  const pct = Number(a.nema_rate ?? 0)
-                  return (
-                    <tr key={a.id} className="hover:bg-surface2/50">
-                      <td className="td">
-                        <div className="font-medium">{a.name}</div>
-                        <div className="text-xs text-muted">
-                          {a.lastMove
-                            ? `Son hareket · ${format(parseISO(a.lastMove.date), 'd MMM yyyy', { locale: tr })}`
-                            : 'Hareket yok'}
-                        </div>
+                {ownAccounts.map(accountRow)}
+                {ipoAccounts.length > 0 && (
+                  <>
+                    {/* Arz hesapları ayrı grupta: sayıları çok olabildiği için katlanır */}
+                    <tr className="bg-surface2/40">
+                      <td className="td" colSpan={2}>
+                        <button
+                          className="text-xs font-medium text-muted hover:text-ink"
+                          onClick={() => setShowIpo((v) => !v)}
+                        >
+                          {showIpo ? '▾' : '▸'} Halka arz hesapları · {ipoAccounts.length}
+                        </button>
                       </td>
-                      <td className="td">
-                        {pct > 0 ? (
-                          <Badge tone="accent">%{formatRate(pct)} yıllık</Badge>
-                        ) : (
-                          <span className="text-xs text-muted">—</span>
-                        )}
-                      </td>
-                      <td className={`td text-right num ${a.balance > 0 ? 'text-ink' : 'text-muted'}`}>
-                        {formatTRY(a.balance)}
-                      </td>
-                      <td className={`td text-right num ${a.todayNema > 0 ? 'text-pos' : 'text-muted'}`}>
-                        {a.todayNema > 0 ? `+${formatTRY(a.todayNema)}` : '—'}
-                      </td>
-                      <td className="td text-right num text-muted">
-                        {pct > 0 && a.balance > 0
-                          ? formatTRY(projectNema(a.balance, pct, 30))
-                          : '—'}
-                      </td>
-                      <td className="td text-right whitespace-nowrap">
-                        {canWrite && (
-                          <div className="inline-flex gap-1">
-                            <button className="btn-ghost text-xs" onClick={() => openMove('giris', a.id)}>
-                              Giriş
-                            </button>
-                            <button
-                              className="btn-ghost text-xs"
-                              onClick={() => openMove('cikis', a.id)}
-                              disabled={a.balance <= 0}
-                            >
-                              Çıkış
-                            </button>
-                            <button
-                              className="btn-ghost text-xs"
-                              onClick={() => openTransfer(a.id)}
-                              disabled={a.balance <= 0 || activeAccounts.length < 2}
-                            >
-                              Aktar
-                            </button>
-                            <button className="btn-ghost text-xs" onClick={() => openNema(a)}>
-                              Nema
-                            </button>
-                          </div>
-                        )}
-                      </td>
+                      <td className="td text-right num text-muted">{formatTRY(totals.ipoCash)}</td>
+                      <td className="td" colSpan={3}></td>
                     </tr>
-                  )
-                })}
+                    {showIpo && ipoAccounts.map(accountRow)}
+                  </>
+                )}
               </tbody>
               <tfoot>
                 <tr>
@@ -342,6 +409,8 @@ export default function Cash() {
         <p className="mt-1 text-xs text-muted">
           Buradaki bakiye Dashboard'daki toplam varlığa "hesaplarda bekleyen nakit" olarak
           girer; aynı parayı Yeni Giriş'te ayrıca kalem olarak yazma, iki kez sayılır.
+          Halka arz hesaplarının parası Dashboard'da ayrı bir kalemde ("halka arz iadesi")
+          sayıldığı için oradaki nakit rakamı buradakinden düşük görünür — toplam varlık aynı.
         </p>
       </Card>
 
@@ -356,11 +425,7 @@ export default function Cash() {
               onChange={(e) => setFilterAccount(e.target.value)}
             >
               <option value="">Tüm hesaplar</option>
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
+              {accountOptions(undefined, false)}
             </select>
             <select
               className="text-xs py-1"
@@ -454,11 +519,7 @@ export default function Cash() {
                   value={modal.accountId}
                   onChange={(e) => setModal({ ...modal, accountId: e.target.value })}
                 >
-                  {activeAccounts.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name} · {formatTRY(a.balance)}
-                    </option>
-                  ))}
+                  {accountOptions()}
                 </select>
               </div>
               <div>
@@ -513,11 +574,7 @@ export default function Cash() {
                   value={modal.from}
                   onChange={(e) => setModal({ type: 'transfer', from: e.target.value })}
                 >
-                  {activeAccounts.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name} · {formatTRY(a.balance)}
-                    </option>
-                  ))}
+                  {accountOptions()}
                 </select>
               </div>
               <div>
@@ -531,13 +588,7 @@ export default function Cash() {
                   <option value="" disabled>
                     Hedef seç…
                   </option>
-                  {activeAccounts
-                    .filter((a) => a.id !== modal.from)
-                    .map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.name}
-                      </option>
-                    ))}
+                  {accountOptions(modal.from)}
                 </select>
               </div>
               <div>
@@ -560,7 +611,9 @@ export default function Cash() {
             </div>
             <p className="text-xs text-muted">
               Para sende kaldığı için toplam varlığın değişmez; yalnızca hangi hesapta durduğu
-              değişir. Nemalandırma hedef hesabın oranıyla işlemeye devam eder.
+              değişir. Nemalandırma hedef hesabın oranıyla işlemeye devam eder. Halka arz
+              hesapların da listede — arza para göndermek ya da satış gelirini kendi hesabına
+              çekmek için aynı aktarımı kullan.
             </p>
             <div className="flex justify-end gap-2 pt-1">
               <button type="button" className="btn-ghost" onClick={() => setModal(null)}>

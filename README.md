@@ -89,6 +89,13 @@ Hesaplardaki para `account_ledger` defterinde tutulur: elle **para girişi /
 geliri**, hisse-fon **alış / satışı** ve günlük **nema** aynı tabloya yazılır.
 Hesabın bakiyesi bu hareketlerin toplamıdır.
 
+Nakit sayfası bütün hesaplarını gösterir; halka arz hesapları (`is_ipo`) alt
+tarafta katlanabilir bir grupta durur ve aktarım listelerinde ayrı başlık
+altında çıkar — kendi hesabınla arz hesabı arasında para gönderip almak için
+aynı "Aktar" adımı kullanılır. Dashboard'da arz hesaplarının bakiyesi ayrı bir
+kalemde ("halka arz iadesi") sayıldığı için oradaki nakit rakamı Nakit
+sayfasındakinden düşük görünür; toplam varlık ikisinde de aynıdır.
+
 ### İşlemin parası — alış/satış nakde nasıl bağlanır
 
 Alım/Satım sayfasında bir işlem kaydettiğinde parası da deftere yazılır:
@@ -284,9 +291,11 @@ tek fonu hedeflemek için `--sembol THF`.
 ## 1d. Halka arz akışı
 
 Halka arza kendi hesabının yanı sıra yakınlarının hesaplarından da giriyorsan,
-o hesaplar **ayrı tutulur**: `accounts.is_ipo = true` olanlar yalnızca Halka Arz
-sayfasında listelenir, Nakit ve Hesaplar sayfalarını kalabalıklaştırmaz. Yine de
-bakiyeleri senin toplam varlığına girer — para senin.
+o hesaplar `accounts.is_ipo = true` ile **ayrı işaretlenir**: arz akışı (talep,
+dağıtım, hesap bazlı satış) yalnızca Halka Arz sayfasından yönetilir. Nakit ve
+Hesaplar sayfalarında ise ayrı bir grup altında listelenirler — para senin
+olduğu için hem bakiyeleri toplam varlığına girer hem de kendi hesaplarınla
+aralarında aktarım yapabilirsin.
 
 Kurulum: **SQL Editor** → [`supabase/ipo-v2.sql`](supabase/ipo-v2.sql), ardından
 [`supabase/ipo-talep.sql`](supabase/ipo-talep.sql) (talep blokesi — aşağıda).
@@ -403,7 +412,7 @@ etkilenmez.
 | `/takip` | Günlük takip tablosu (kullanıcıya göre gizlenebilir) |
 | `/trades` | Alım / satım defteri, pozisyonlar, vergi sonrası kâr |
 | `/accounts` | Banka/kurum yönetimi + güncel bakiye ve pay |
-| `/nakit` | Hesaplardaki nakit, para giriş/çıkışı, aktarım, günlük nemalandırma |
+| `/nakit` | Bütün hesaplardaki nakit (arz hesapları ayrı grupta), para giriş/çıkışı, aktarım, günlük nemalandırma |
 | `/ipo` | Halka arz: hesap yönetimi, talep, dağıtım, hesap bazlı satış, kâr raporları |
 | `/gunluk` | Günlük kâr: gün gün grafik, seçilen günün kalem dökümü ve o günkü pozisyonlar |
 | `/transactions` | Gelir/gider, aylık kategori grafiği ve **verdiğin borçlar** |

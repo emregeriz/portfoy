@@ -14,6 +14,18 @@ export interface CashAccount extends Account {
   lastMove: LedgerRow | null
 }
 
+export interface CashOptions {
+  /**
+   * Halka arz hesapları da listeye girsin mi?
+   *
+   * Nakit sayfası `true` verir — arz hesaplarının parası da senin paran, hem
+   * görünmesi hem aralarında aktarım yapılabilmesi gerekir. Dashboard `false`
+   * bırakır: orada arz hesaplarının bakiyesi `useIpos.totalWaiting` olarak
+   * ayrıca toplanıyor, buraya da girerse para iki kez sayılır.
+   */
+  includeIpo?: boolean
+}
+
 /**
  * Hesaplardaki nakit — bakiye, para giriş/çıkışı, aktarım ve nemalandırma.
  *
@@ -24,7 +36,8 @@ export interface CashAccount extends Account {
  * Hook yüklendiğinde nemalandırma tanımlı hesaplarda eksik günlerin faizi
  * işlenir — uygulama günlerce açılmasa da açıldığında geriye dönük tamamlanır.
  */
-export function useCash(userId?: string | null) {
+export function useCash(userId?: string | null, opts?: CashOptions) {
+  const includeIpo = opts?.includeIpo ?? false
   const { user } = useAuth()
   const [accounts, setAccounts] = useState<Account[]>([])
   const [ledger, setLedger] = useState<LedgerRow[]>([])
@@ -43,8 +56,8 @@ export function useCash(userId?: string | null) {
       return
     }
     const [accRes, ledRes] = await Promise.all([
-      // Halka arz hesapları burada listelenmez — onlar Halka Arz sayfasının işi
-      supabase.from('accounts').select('*').eq('user_id', userId).eq('is_ipo', false).order('name'),
+      // Arz hesapları dahil hepsi okunur; kimin listeleneceğine `includeIpo` karar verir
+      supabase.from('accounts').select('*').eq('user_id', userId).order('name'),
       supabase
         .from('account_ledger')
         .select('*')
@@ -79,6 +92,12 @@ export function useCash(userId?: string | null) {
   }, [canWrite, userId, today, load])
 
   // ------------------------------------------------------------ türetilmiş
+  /** Arz hesapları yalnızca istendiğinde listeye girer */
+  const visibleAccounts = useMemo(
+    () => (includeIpo ? accounts : accounts.filter((a) => !a.is_ipo)),
+    [accounts, includeIpo]
+  )
+
   const cashAccounts = useMemo<CashAccount[]>(() => {
     const byAccount = new Map<string, LedgerRow[]>()
     for (const l of ledger) {
@@ -86,7 +105,7 @@ export function useCash(userId?: string | null) {
       if (list) list.push(l)
       else byAccount.set(l.account_id, [l])
     }
-    return accounts.map((a) => {
+    return visibleAccounts.map((a) => {
       const rows = byAccount.get(a.id) ?? []
       let balance = 0
       let todayNema = 0
@@ -101,7 +120,17 @@ export function useCash(userId?: string | null) {
       }
       return { ...a, balance, todayNema, totalNema, lastMove: rows[0] ?? null }
     })
-  }, [accounts, ledger, today])
+  }, [visibleAccounts, ledger, today])
+
+  /**
+   * Hareket satırındaki hesap adı — arz hesapları listede olmasa da defterde
+   * satırı var; bütün hesaplardan çözülür ki tabloda "—" yazmasın.
+   */
+  const nameOf = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const a of accounts) m.set(a.id, a.name)
+    return m
+  }, [accounts])
 
   const balanceOf = useMemo(() => {
     const m = new Map<string, number>()
@@ -110,17 +139,19 @@ export function useCash(userId?: string | null) {
   }, [cashAccounts])
 
   const totals = useMemo(() => {
-    let cash = 0
+    let ownCash = 0
+    let ipoCash = 0
     let todayNema = 0
     let totalNema = 0
     let earning = 0
     for (const a of cashAccounts) {
-      cash += a.balance
+      if (a.is_ipo) ipoCash += a.balance
+      else ownCash += a.balance
       todayNema += a.todayNema
       totalNema += a.totalNema
       if (Number(a.nema_rate) > 0 && a.balance > 0) earning += a.balance
     }
-    return { cash, todayNema, totalNema, earning }
+    return { cash: ownCash + ipoCash, ownCash, ipoCash, todayNema, totalNema, earning }
   }, [cashAccounts])
 
   // ------------------------------------------------------------- yazma
@@ -245,7 +276,10 @@ export function useCash(userId?: string | null) {
   const ensureAccounts = useCallback(
     async (defs: { name: string; type: Account['type']; nema_rate?: number }[]) => {
       if (!user) throw new Error('Oturum bulunamadı.')
-      const existing = new Set(accounts.map((a) => a.name.trim().toLocaleLowerCase('tr')))
+      // Arz hesapları sayılmaz: "Midas · Yaren" varken kendi Midas'ın açılabilsin
+      const existing = new Set(
+        accounts.filter((a) => !a.is_ipo).map((a) => a.name.trim().toLocaleLowerCase('tr'))
+      )
       const rows = defs
         .filter((d) => !existing.has(d.name.trim().toLocaleLowerCase('tr')))
         .map((d) => ({
@@ -268,6 +302,7 @@ export function useCash(userId?: string | null) {
   return {
     accounts: cashAccounts,
     ledger,
+    nameOf,
     balanceOf,
     totals,
     canWrite,
