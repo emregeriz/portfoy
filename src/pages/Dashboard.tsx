@@ -7,6 +7,7 @@ import { useNetWorth, useSnapshots, usePositionsForSnapshots } from '../hooks/us
 import { usePrices } from '../hooks/usePrices'
 import { useIpos } from '../hooks/useIpos'
 import { ipoVirtualTrades } from '../lib/ipoTrades'
+import { pendingRequests } from '../lib/ipoFunding'
 import { useCash } from '../hooks/useCash'
 import { useTable } from '../hooks/useTable'
 import { useCorporate } from '../hooks/useCorporate'
@@ -90,9 +91,10 @@ export default function Dashboard() {
     select: TRADE_SELECT,
   })
 
-  const { ipos, entries, accounts: ipoAccountRows, totalWaiting, blockedTotal } = useIpos(
-    isTotal ? null : effectiveScope
-  )
+  const {
+    ipos, entries, ledger: ipoLedger, accounts: ipoAccountRows, ipoAccounts,
+    balanceOf: ipoBalanceOf, totalWaiting, blockedTotal,
+  } = useIpos(isTotal ? null : effectiveScope)
   /**
    * Arz dağıtım/satışları sanal işlem olarak deftere katılır — arz hisseleri
    * yalnızca burada sayılır, ayrıca "elde tutulan arz" kalemi yoktur.
@@ -118,8 +120,33 @@ export default function Dashboard() {
   // "toplam" sekmesi bir kullanıcı değil; sorgu UUID beklediği için boş geçilir
   const corporate = useCorporate(isTotal ? null : effectiveScope)
 
-  /** Kendi hesaplarındaki nakit — Nakit sayfasının toplamı (halka arz hariç) */
+  /**
+   * Kendi hesaplarındaki nakit — Nakit sayfasının toplamı (halka arz hariç).
+   *
+   * Arz hesapları bilerek dışarıda: onların bakiyesi `totalWaiting` olarak
+   * ayrıca toplanıyor, buraya da girerse para iki kez sayılır.
+   */
   const { totals: cashTotals, accounts: cashAccounts } = useCash(isTotal ? null : effectiveScope)
+
+  /**
+   * Arz hesabı bazında nakit: hesapta duran para + o hesaptan arzda bloke
+   * duran para. Bloke, `talep` satırıyla bakiyeden düşmüştür ama kaybolmadı —
+   * Hesaplar sayfası da hesabın payını böyle hesaplıyor.
+   */
+  const ipoCashByAccount = useMemo(() => {
+    const nameOf = new Map(ipoAccountRows.map((a) => [a.id, a.name]))
+    const m = new Map<string, number>()
+    const add = (name: string | undefined, value: number) => {
+      if (!name || !value) return
+      m.set(name, (m.get(name) ?? 0) + value)
+    }
+    for (const a of ipoAccounts) add(a.name, ipoBalanceOf.get(a.id) ?? 0)
+    for (const p of pendingRequests(ipos, entries, ipoLedger)) add(nameOf.get(p.accountId), p.blocked)
+    return m
+  }, [ipoAccountRows, ipoAccounts, ipoBalanceOf, ipos, entries, ipoLedger])
+
+  /** Toplam nakit: kendi hesapların + arz hesapları + arzda bloke bekleyen */
+  const cashTotal = cashTotals.cash + totalWaiting + blockedTotal
 
   const holdings = useMemo(
     () =>
@@ -135,16 +162,23 @@ export default function Dashboard() {
     [allTrades, bySymbol, corporate.actions]
   )
 
-  /** Snapshot kalemleri + alım/satım pozisyonları tek dağılımda */
+  /** Snapshot kalemleri + alım/satım pozisyonları + hesaplardaki nakit */
   const byKind = useMemo(() => {
     const map = new Map<string, number>()
     for (const s of allocationByKind(snapshotPositions)) map.set(s.key, s.value)
     for (const h of holdingsByKind(holdings)) map.set(h.key, (map.get(h.key) ?? 0) + h.value)
+    // Nakit de bir varlık türü: Toplam Varlık'a giriyorsa pastada da payı olmalı,
+    // yoksa dilimlerin toplamı üstteki karttan az çıkar.
+    if (cashTotal) map.set('nakit', (map.get('nakit') ?? 0) + cashTotal)
     return [...map.entries()]
-      .map(([key, value]) => ({ key, label: KIND_LABELS[key as AssetKind] ?? key, value }))
+      .map(([key, value]) => ({
+        key,
+        label: key === 'nakit' ? 'Nakit' : KIND_LABELS[key as AssetKind] ?? key,
+        value,
+      }))
       .filter((s) => s.value !== 0)
       .sort((a, b) => b.value - a.value)
-  }, [snapshotPositions, holdings])
+  }, [snapshotPositions, holdings, cashTotal])
 
   const byAccount = useMemo(() => {
     const map = new Map<string, number>()
@@ -157,11 +191,15 @@ export default function Dashboard() {
     for (const a of cashAccounts) {
       if (a.balance) map.set(a.name, (map.get(a.name) ?? 0) + a.balance)
     }
+    // Arz hesapları da: bakiyeleri + o hesaptan arzda bloke duran para
+    for (const [name, value] of ipoCashByAccount) {
+      map.set(name, (map.get(name) ?? 0) + value)
+    }
     return [...map.entries()]
       .map(([key, value]) => ({ key, label: key, value }))
       .filter((s) => s.value !== 0)
       .sort((a, b) => b.value - a.value)
-  }, [snapshotPositions, allTrades, holdings, cashAccounts])
+  }, [snapshotPositions, allTrades, holdings, cashAccounts, ipoCashByAccount])
 
   /** Fon/sembol bazlı vergi sonrası toplam kazanç */
   const fundProfit = useMemo(
@@ -317,9 +355,12 @@ export default function Dashboard() {
           title="Toplam Varlık"
           value={liveAssets}
           hint={
-            tradeTotals.value > 0
-              ? `${formatTRY(tradeTotals.value)} alım/satım pozisyonu dahil`
-              : undefined
+            [
+              tradeTotals.value > 0 ? `${formatTRY(tradeTotals.value)} pozisyon` : null,
+              cashTotal > 0 ? `${formatTRY(cashTotal)} nakit` : null,
+            ]
+              .filter(Boolean)
+              .join(' · ') + (tradeTotals.value > 0 || cashTotal > 0 ? ' dahil' : '') || undefined
           }
         />
         <StatCard
@@ -391,9 +432,12 @@ export default function Dashboard() {
               <div>
                 <p className="text-lg text-ink">{formatTRY(cashTotals.cash)}</p>
                 <p className="text-xs text-muted">
-                  Hesaplardaki nakit
+                  Kendi hesaplarındaki nakit
                   {cashTotals.todayNema > 0 && (
                     <span className="text-pos"> · bugün +{formatTRY(cashTotals.todayNema)} nema</span>
+                  )}
+                  {cashTotals.totalNema > 0 && (
+                    <span> · toplam {formatTRY(cashTotals.totalNema)} nema</span>
                   )}
                 </p>
               </div>

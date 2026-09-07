@@ -96,6 +96,14 @@ aynı "Aktar" adımı kullanılır. Dashboard'da arz hesaplarının bakiyesi ayr
 kalemde ("halka arz iadesi") sayıldığı için oradaki nakit rakamı Nakit
 sayfasındakinden düşük görünür; toplam varlık ikisinde de aynıdır.
 
+Nakit her yerde varlık sayılır: Dashboard'daki **Toplam Varlık** ve **Net
+Değer** hesaplara + arz hesaplarına + arzda bloke duran paraya kadar hepsini
+içerir, **Varlık Dağılımı** pastasında "Nakit" dilimi olarak, **Hesap Bazlı
+Dağılım**'da ise hesabın kendi çubuğunda görünür. "Şu Anki Tahmini Değer"
+kartında kalemler ayrı ayrı yazıldığı için oradaki "kendi hesaplarındaki
+nakit" satırı arz hesaplarını içermez — onlar "halka arz iadesi" ve "arzda
+bloke" satırlarında durur.
+
 ### İşlemin parası — alış/satış nakde nasıl bağlanır
 
 Alım/Satım sayfasında bir işlem kaydettiğinde parası da deftere yazılır:
