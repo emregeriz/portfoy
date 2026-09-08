@@ -9,16 +9,18 @@ import TodayReturn from './TodayReturn'
  * Üst menü. `key` alanı `profiles.nav_hidden` ile eşleşir: bir sayfayı
  * yalnızca belirli kullanıcıdan kaldırmak için o kullanıcının profiline
  * anahtarı eklemek yeter, kod değişmez.
+ *
+ * Takip, Nakit ve Gelir/Gider artık başlık değil, sayfa içi sekme:
+ * Alım/Satım → Takip · Hesaplar → Nakit · Günlük Kâr → Gelir/Gider
+ * (bkz. App.tsx). Sekmeler de aynı `nav_hidden` anahtarlarını dinler.
  */
 const NAV = [
   { key: 'dashboard', to: '/', label: 'Dashboard', end: true },
-  { key: 'takip', to: '/takip', label: 'Takip' },
   { key: 'trades', to: '/trades', label: 'Alım / Satım' },
   { key: 'accounts', to: '/accounts', label: 'Hesaplar' },
-  { key: 'nakit', to: '/nakit', label: 'Nakit' },
   { key: 'ipo', to: '/ipo', label: 'Halka Arz' },
   { key: 'gunluk', to: '/gunluk', label: 'Günlük Kâr' },
-  { key: 'transactions', to: '/transactions', label: 'Gelir / Gider' },
+  { key: 'hedef', to: '/hedef', label: 'Hedef' },
 ]
 
 export default function Layout() {

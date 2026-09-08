@@ -26,6 +26,7 @@ export function ipoVirtualTrades(
     // Halka arz hissesi: satış kazancından stopaj kesilmez, oran türden gelir
     const assetRef = {
       id: `ipo-${code}`, symbol: code, name: ipo.name, kind: 'hisse' as const, tax_rate: null,
+      settle_days: null,
     }
 
     for (const e of entries) {
@@ -42,6 +43,7 @@ export function ipoVirtualTrades(
         asset_id: null,
         side: 'alis',
         trade_date: buyDate,
+        trade_time: null,
         quantity: alloc,
         unit_price: lotPrice,
         amount: alloc * lotPrice,
@@ -64,6 +66,7 @@ export function ipoVirtualTrades(
           asset_id: null,
           side: 'satis',
           trade_date: e.sold_date,
+          trade_time: null,
           quantity: sold,
           unit_price: soldPrice,
           amount: sold * soldPrice,

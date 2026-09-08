@@ -138,6 +138,30 @@ select cron.schedule(
   $cron$
 );
 
+-- ---------------------------------------------------------------- 5c
+-- Halka arz son gün hatırlatması — hafta içi 08:00–18:55 TR arası 5 dk'da bir
+--
+-- Talep toplamanın son günü kapanışa 2 saat kala WhatsApp yazar (17:00
+-- kapanış → 15:00). Önce supabase/arz-son-gun.sql çalıştırılmış ve
+-- ipo-deadline fonksiyonu deploy edilmiş olmalı. Süreyi değiştirmek için
+-- body'ye {"leadMinutes": 90} ver.
+select cron.schedule(
+  'ipo-deadline-reminder',
+  '*/5 5-15 * * 1-5',
+  $cron$
+  select net.http_post(
+    url     := 'https://wihfycgxdvazhgnnprhz.supabase.co/functions/v1/ipo-deadline',
+    headers := jsonb_build_object(
+      'Content-Type',  'application/json',
+      'Authorization', 'Bearer ' || (
+        select decrypted_secret from vault.decrypted_secrets where name = 'service_role_key'
+      )
+    ),
+    body    := '{}'::jsonb
+  );
+  $cron$
+);
+
 -- ---------------------------------------------------------------- 6
 -- Hisse fiyatları seans boyunca dakikada bir — hafta içi 10:00–18:59 TR
 -- (07–15 UTC). {"only":"hisse"} yalnızca BIST hisselerini çeker; fon,

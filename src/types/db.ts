@@ -45,6 +45,11 @@ export interface Asset {
    * yoğun fon TEFAS'ta fon görünür ama stopajsızdır — o ayrım buraya yazılır.
    */
   tax_rate: number | null
+  /**
+   * Satış parasının hesaba geçtiği iş günü sayısı (valör). null ise türün
+   * varsayılanı: hisse 2, fon 2, diğerleri 0. Fonda 13:00 sonrası emir +1.
+   */
+  settle_days: number | null
   created_at: string
 }
 
@@ -323,6 +328,8 @@ export interface IpoFeedItem {
   sort_order: number
   detail: IpoFeedDetail | null
   detail_fetched_at: string | null
+  /** Son gün hatırlatması gönderildi (bkz. arz-son-gun.sql) */
+  deadline_notified_at?: string | null
   updated_at: string
 }
 
@@ -360,6 +367,8 @@ export interface Trade {
   asset_id: string | null
   side: TradeSide
   trade_date: string
+  /** Emir saati "ss:dd" — fonda 13:00 sınırı takas gününü bir gün atar */
+  trade_time: string | null
   quantity: number
   unit_price: number
   /** Gerçekleşen toplam tutar — adet × birim fiyattan küsurat farkı olabilir */
@@ -373,5 +382,31 @@ export interface Trade {
 
 export interface TradeWithRefs extends Trade {
   accounts: Pick<Account, 'id' | 'name' | 'type'> | null
-  assets: Pick<Asset, 'id' | 'symbol' | 'name' | 'kind' | 'tax_rate'> | null
+  assets: Pick<Asset, 'id' | 'symbol' | 'name' | 'kind' | 'tax_rate' | 'settle_days'> | null
+}
+
+// --------------------------------------------------------------------
+// Hedefler — "şu tarihe kadar şu kadar" + isteğe bağlı birikim planı
+// --------------------------------------------------------------------
+export type GoalMetric = 'net' | 'varlik' | 'nakit' | 'pozisyon' | 'manuel'
+
+export interface Goal {
+  id: string
+  user_id: string
+  title: string
+  target_amount: number
+  target_date: string
+  metric: GoalMetric
+  /** metric = manuel iken kullanıcının yazdığı ilerleme */
+  manual_value: number | null
+  start_amount: number
+  start_date: string
+  monthly_add: number
+  /** aylık getiri, yüzde */
+  monthly_rate: number
+  /** aylık eklemenin yıllık artışı, yüzde */
+  add_raise: number
+  note: string | null
+  is_done: boolean
+  created_at: string
 }

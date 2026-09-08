@@ -3,6 +3,8 @@ import { format, parseISO } from 'date-fns'
 import { tr } from 'date-fns/locale'
 import { useAuth } from '../hooks/useAuth'
 import { useCash, type CashAccount } from '../hooks/useCash'
+import { useTrades } from '../hooks/useTrades'
+import { pendingByAccount, pendingSettlements } from '../lib/settlement'
 import NumberInput from '../components/NumberInput'
 import StatCard from '../components/StatCard'
 import { Badge, Card, Empty, ErrorBox, Modal, PageHeader, Spinner } from '../components/ui'
@@ -58,6 +60,17 @@ export default function Cash() {
   const [showIpo, setShowIpo] = useState(true)
 
   const activeAccounts = useMemo(() => accounts.filter((a) => a.is_active), [accounts])
+
+  /**
+   * Yolda olan para: satış deftere işlem günü yazılır ama takas T+2 (fonda
+   * valör) sonra gelir. Bakiyede görünür, henüz harcanamaz — hesap satırında
+   * ayrı kolon ve kullanılabilir tutar olarak gösterilir.
+   */
+  const { rows: tradeRows } = useTrades(user?.id)
+  const today = todayISO()
+  const pending = useMemo(() => pendingSettlements(ledger, tradeRows, today), [ledger, tradeRows, today])
+  const pendingOf = useMemo(() => pendingByAccount(pending), [pending])
+  const pendingTotal = useMemo(() => pending.reduce((s, p) => s + p.amount, 0), [pending])
   /** Kendi yatırım/banka hesapların */
   const ownAccounts = useMemo(() => activeAccounts.filter((a) => !a.is_ipo), [activeAccounts])
   /** Halka arz hesapları — ayrı grupta durur ki liste kalabalıklaşmasın */
@@ -211,6 +224,25 @@ export default function Cash() {
         </td>
         <td className={`td text-right num ${a.balance > 0 ? 'text-ink' : 'text-muted'}`}>
           {formatTRY(a.balance)}
+          {pendingOf.get(a.id) && (
+            <div className="text-xs text-muted font-normal">
+              kullanılabilir {formatTRY(a.balance - (pendingOf.get(a.id)?.amount ?? 0))}
+            </div>
+          )}
+        </td>
+        <td className="td text-right num whitespace-nowrap">
+          {(() => {
+            const p = pendingOf.get(a.id)
+            if (!p) return <span className="text-muted">—</span>
+            return (
+              <span className="text-amber-600 dark:text-amber-400" title="Takas bekleyen satış parası">
+                {formatTRY(p.amount)}
+                <div className="text-xs font-normal">
+                  {format(parseISO(p.next), 'd MMM', { locale: tr })}
+                </div>
+              </span>
+            )
+          })()}
         </td>
         <td className={`td text-right num ${a.todayNema > 0 ? 'text-pos' : 'text-muted'}`}>
           {a.todayNema > 0 ? `+${formatTRY(a.todayNema)}` : '—'}
@@ -292,9 +324,16 @@ export default function Cash() {
           title="Toplam Nakit"
           value={totals.cash}
           hint={
-            ipoAccounts.length > 0
-              ? `${ownAccounts.length} hesap + ${ipoAccounts.length} arz hesabı (${formatTRY(totals.ipoCash)})`
-              : `${ownAccounts.length} hesap`
+            <>
+              {ipoAccounts.length > 0
+                ? `${ownAccounts.length} hesap + ${ipoAccounts.length} arz hesabı (${formatTRY(totals.ipoCash)})`
+                : `${ownAccounts.length} hesap`}
+              {pendingTotal > 0 && (
+                <span className="text-amber-600 dark:text-amber-400">
+                  {' '}· {formatTRY(pendingTotal)} yolda, kullanılabilir {formatTRY(totals.cash - pendingTotal)}
+                </span>
+              )}
+            </>
           }
         />
         <StatCard
@@ -359,6 +398,7 @@ export default function Cash() {
                   <th className="th">Hesap</th>
                   <th className="th">Nemalandırma</th>
                   <th className="th text-right">Bakiye</th>
+                  <th className="th text-right" title="Satıldı, takası gelmedi">Yolda</th>
                   <th className="th text-right">Bugünkü nema</th>
                   <th className="th text-right">Aylık tahmini</th>
                   <th className="th"></th>
@@ -379,7 +419,7 @@ export default function Cash() {
                         </button>
                       </td>
                       <td className="td text-right num text-muted">{formatTRY(totals.ipoCash)}</td>
-                      <td className="td" colSpan={3}></td>
+                      <td className="td" colSpan={4}></td>
                     </tr>
                     {showIpo && ipoAccounts.map(accountRow)}
                   </>
@@ -391,6 +431,9 @@ export default function Cash() {
                     Toplam
                   </td>
                   <td className="td text-right num font-semibold">{formatTRY(totals.cash)}</td>
+                  <td className="td text-right num text-amber-600 dark:text-amber-400">
+                    {pendingTotal > 0 ? formatTRY(pendingTotal) : '—'}
+                  </td>
                   <td className="td text-right num font-semibold text-pos">
                     {totals.todayNema > 0 ? `+${formatTRY(totals.todayNema)}` : '—'}
                   </td>
@@ -413,6 +456,59 @@ export default function Cash() {
           sayıldığı için oradaki nakit rakamı buradakinden düşük görünür — toplam varlık aynı.
         </p>
       </Card>
+
+      {/* ----------------------------------------------------- yolda olan para */}
+      {pending.length > 0 && (
+        <Card
+          title="Yolda — takas bekleyen satışlar"
+          actions={
+            <span className="text-xs text-amber-600 dark:text-amber-400 num">
+              {formatTRY(pendingTotal)}
+            </span>
+          }
+        >
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[520px]">
+              <thead>
+                <tr>
+                  <th className="th">Satış</th>
+                  <th className="th">Hesap</th>
+                  <th className="th">Sembol</th>
+                  <th className="th text-right">Tutar</th>
+                  <th className="th text-right">Hesaba geçer</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pending.map((p) => (
+                  <tr key={p.ledgerId} className="hover:bg-surface2/50">
+                    <td className="td whitespace-nowrap text-muted">
+                      {format(parseISO(p.tradeDate), 'd MMM', { locale: tr })}
+                    </td>
+                    <td className="td">{accountName(p.accountId)}</td>
+                    <td className="td">
+                      {p.symbol}
+                      {p.source === 'ipo' && (
+                        <span className="ml-2 align-middle">
+                          <Badge tone="accent">arz</Badge>
+                        </span>
+                      )}
+                    </td>
+                    <td className="td text-right num">{formatTRY(p.amount)}</td>
+                    <td className="td text-right whitespace-nowrap text-amber-600 dark:text-amber-400">
+                      {format(parseISO(p.settleDate), 'd MMM EEEE', { locale: tr })}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-3 text-xs text-muted">
+            Hisse satışı T+2 iş günü, fon satışı valör kadar iş günü sonra hesaba geçer (TLY/DFI/THF/DOH
+            2 gün, TMV 3 gün; 13:00'ten sonra verilen emirde bir gün daha). Bakiye satışı hemen sayar,
+            bu tablo o paranın ne zaman gerçekten elinde olacağını gösterir.
+          </p>
+        </Card>
+      )}
 
       {/* ------------------------------------------------------- hareketler */}
       <Card

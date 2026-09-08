@@ -296,6 +296,31 @@ ekranıyla birebir tutuyorsa `--apply` ver. Emir gününü korumak için
 `--tarih-koru` (adet düzelir, günlük kârdaki sahte hareket kalır),
 tek fonu hedeflemek için `--sembol THF`.
 
+### Takas — satış parası ne zaman elde
+
+Satış deftere işlem günü yazılır ama para o gün gelmez: **hisse T+2 iş
+günü** (pazartesi satış → çarşamba), **fon valör kadar iş günü** — TLY /
+DFI / THF / DOH 2 gün, TMV 3 gün. Fonda emir **13:00'ten sonra**
+verildiyse bir gün daha eklenir (2 gün valörlü fon 13:00 öncesi 2, sonrası
+3 gün). Hafta sonu ve resmî tatiller atlanır (`src/lib/settlement.ts`;
+dinî bayramlar her yıl elle eklenir).
+
+Alım/Satım formunda tarihin yanında **saat** alanı var; satış seçince
+"Para hesaba 10 Eyl Perşembe geçer · T+2" satırı canlı yazar. İşlem
+listesinde takası gelmemiş satışın altında `para 10 Eyl` durur. Nakit
+sayfasında hesap satırında **Yolda** kolonu ve bakiyenin altında
+*kullanılabilir* tutar görünür; "Yolda — takas bekleyen satışlar" kartı
+hangi satışın hangi gün geleceğini listeler. Halka arz satışları hisse
+gibi T+2 sayılır.
+
+Kurulum: **SQL Editor** → [`supabase/takas.sql`](supabase/takas.sql)
+(`trades.trade_time`, `assets.settle_days`; TMV 3, diğer bilinen fonlar 2
+olarak yazılır). Yeni bir fonun valörünü değiştirmek için:
+
+```sql
+update assets set settle_days = 3 where symbol = 'XYZ';
+```
+
 ## 1d. Halka arz akışı
 
 Halka arza kendi hesabının yanı sıra yakınlarının hesaplarından da giriyorsan,
@@ -393,6 +418,29 @@ hesapta zaten vardı, sadece kayda geçmemişti. Açılış girişi istemiyorsan
 - **Hesaplar → Hisse / Arz** — aynı bloke hesap hesap: satırı açınca bekleyen arz,
   istenen lot, lot fiyatı ve bloke tutar görünür; hesabın toplamına ve payına girer
 
+### Son gün hatırlatması — WhatsApp
+
+Talep toplamanın son günü, kapanışa **2 saat kala** WhatsApp yazar:
+17:00 kapanış → 15:00, 13:00 kapanış → 11:00. Kapanış saati arzın
+halkarz.com detayındaki "9-10-11 Eylül 2026 09:00-17:00" metninden
+okunur; saat yoksa 17:00 varsayılır ve mesajda belirtilir. Halka Arz
+sayfasındaki takvimde seçili arzın altında "Son talep 11 Eylül 17:00 ·
+2 gün 4 saat kaldı" satırı, listede de son gün **Son gün** rozeti durur.
+
+Kurulum:
+
+1. **SQL Editor** → [`supabase/arz-son-gun.sql`](supabase/arz-son-gun.sql)
+   (`ipo_feed.deadline_notified_at`).
+2. `npx supabase functions deploy ipo-deadline`
+3. [`supabase/cron.sql`](supabase/cron.sql) → **5c** bloğu (hafta içi
+   08:00–18:55 arası 5 dakikada bir).
+
+Mesaj `user_wa_keys`'teki her numaraya gider (bkz. Hatırlatıcılar →
+WhatsApp). Süreyi değiştirmek için cron gövdesine `{"leadMinutes": 90}`
+yaz. Kuru çalıştırma: fonksiyona `{"dry": true}` gönder — ne yazacağını
+döner, mesaj atmaz. Bir arzı yeniden hatırlatmaya açmak için
+`deadline_notified_at` sütununu `null` yap.
+
 ## 2. Güvenlik modeli
 
 Her kullanıcı **yalnızca kendi verisini** görür ve yazar. `accounts`, `snapshots`,
@@ -417,14 +465,40 @@ etkilenmez.
 |---|---|
 | `/login` | E-posta + şifre girişi (kayıt kapalı) |
 | `/` | Dashboard: toplam varlık/borç/net değer, zaman serisi, dağılım grafikleri |
-| `/takip` | Günlük takip tablosu (kullanıcıya göre gizlenebilir) |
 | `/trades` | Alım / satım defteri, pozisyonlar, vergi sonrası kâr |
+| `/trades/takip` | Günlük takip tablosu — Alım/Satım altında sekme (kullanıcıya göre gizlenebilir) |
 | `/accounts` | Banka/kurum yönetimi + güncel bakiye ve pay |
-| `/nakit` | Bütün hesaplardaki nakit (arz hesapları ayrı grupta), para giriş/çıkışı, aktarım, günlük nemalandırma |
+| `/accounts/nakit` | Nakit — Hesaplar altında sekme: bütün hesaplardaki para (arz hesapları ayrı grupta), giriş/çıkış, aktarım, nema, takas bekleyen satışlar |
 | `/ipo` | Halka arz: hesap yönetimi, talep, dağıtım, hesap bazlı satış, kâr raporları |
 | `/gunluk` | Günlük kâr: gün gün grafik, seçilen günün kalem dökümü ve o günkü pozisyonlar |
-| `/transactions` | Gelir/gider, aylık kategori grafiği ve **verdiğin borçlar** |
+| `/gunluk/gelir-gider` | Gelir/gider — Günlük Kâr altında sekme: aylık kategori grafiği ve **verdiğin borçlar** |
+| `/hedef` | Hedefler ve birikim hesaplayıcısı (aşağıda) |
 | `/reminders` | Serbest hatırlatıcılar (profil menüsünden) |
+
+Eski adresler (`/takip`, `/nakit`, `/transactions`) yeni yerlerine yönlendirir.
+
+### Hedef
+
+"Şu tarihe kadar şu kadar" hedefleri ve bir birikim hesaplayıcısı.
+Kurulum: **SQL Editor** → [`supabase/hedef.sql`](supabase/hedef.sql).
+
+**Hedefler** — ad, tutar, tarih ve neyin ölçüleceği: net değer, toplam
+varlık, nakit, pozisyon değeri ya da elle girilen ilerleme. Sayılar
+Dashboard'la aynı kaynaktan gelir (`src/hooks/usePortfolio.ts`). Her kart
+ilerleme çubuğu, kalan tutar/gün ve **yetişmek için aylık ne eklemen
+gerektiğini** yazar. Plan girilmişse (başlangıç, aylık ekleme, aylık
+getiri) "plana göre bugün olması gereken" ile gerçek değer kıyaslanır:
+*Yolunda* / *Plandan geride*. Kartı açınca plan eğrisi, %25-50-75-100
+kilometre taşları ve ay ay tablo gelir; bu ayın satırı işaretlidir.
+
+**Hesaplayıcı** — dört soru: *Ne olur?* (başlangıç + aylık ekleme + aylık
+getiri + süre → sonuç), *Ne zaman?* (hedefe kaç ayda varılır), *Aylık ne
+kadar?* (vadede varmak için gereken ekleme), *% kaç getiri?* (gereken aylık
+getiri). Sonuç: toplam / anapara / getiri, anapara-getiri çubuğu, aya göre
+büyüme grafiği, kilometre taşları ve ay ay tablo. Gelişmiş: aylık eklemeye
+yıllık zam ve enflasyona göre bugünkü değer. **Hedef olarak kaydet** senaryoyu
+planıyla birlikte hedefe çevirir. Matematik `src/lib/goal.ts`: getiri dönem
+başı bakiyeye işler, ekleme ay sonunda gelir.
 
 ### Hatırlatıcılar
 
@@ -467,10 +541,11 @@ aktive edip yeni apikey'i `user_wa_keys`'e yaz — bu arada kanalı
 
 ### Kullanıcıya özel menü
 
-Üst menü `profiles.nav_hidden` dizisine bakar: içindeki anahtarlar o
-kullanıcının menüsünde görünmez. Anahtarlar `Layout.tsx`'teki NAV `key`
-değerleridir (`dashboard`, `takip`, `trades`, `accounts`, `nakit`, `ipo`,
-`transactions`). Kod değiştirmeden tek SQL ile ayarlanır:
+Üst menü ve sayfa içi sekmeler `profiles.nav_hidden` dizisine bakar:
+içindeki anahtarlar o kullanıcıda görünmez. Anahtarlar `Layout.tsx`'teki
+NAV ve `App.tsx`'teki sekme `key` değerleridir (`dashboard`, `trades`,
+`takip`, `accounts`, `nakit`, `ipo`, `gunluk`, `transactions`, `hedef`).
+Kod değiştirmeden tek SQL ile ayarlanır:
 
 ```sql
 update profiles set nav_hidden = array['takip'] where display_name = 'emregeriz';

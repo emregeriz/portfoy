@@ -3,7 +3,7 @@ import type { TradeWithRefs } from '../types/db'
 
 /** Alım/satım kayıtları hesap ve varlık bilgisiyle birlikte okunur */
 export const TRADE_SELECT =
-  '*, accounts:account_id (id, name, type), assets:asset_id (id, symbol, name, kind, tax_rate)'
+  '*, accounts:account_id (id, name, type), assets:asset_id (id, symbol, name, kind, tax_rate, settle_days)'
 
 /** Alım/satım defteri — tarihe göre yeniden eskiye */
 export function useTrades(userId?: string | null) {

@@ -1,7 +1,37 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { Badge, Card, Empty, ErrorBox, Spinner } from './ui'
+import { deadlineAt, parseIpoDeadline, remainingLabel } from '../lib/ipoDeadline'
 import type { IpoFeedItem } from '../types/db'
+
+const trDay = (iso: string) =>
+  new Date(iso + 'T00:00:00Z').toLocaleDateString('tr-TR', {
+    day: 'numeric', month: 'long', timeZone: 'UTC',
+  })
+
+/**
+ * Talep toplama kapanışı: son gün + saat (detay sayfasından; yoksa 17:00).
+ * Kapanışa 2 saat kala ipo-deadline fonksiyonu WhatsApp yazar — burada
+ * aynı hesap gösterilir ki mesajın ne zaman geleceği belli olsun.
+ */
+function DeadlineLine({ item, now }: { item: IpoFeedItem; now: Date }) {
+  const dl = parseIpoDeadline(item.detail?.tarih ?? item.date_text)
+  if (!dl) return null
+  const open = deadlineAt(dl) > now
+  return (
+    <div className={`text-xs mt-0.5 ${open ? 'text-amber-600 dark:text-amber-400' : 'text-muted'}`}>
+      {open ? (
+        <>
+          Son talep {trDay(dl.date)} {dl.time}
+          {!dl.timeKnown && ' (saat varsayılan)'} · {remainingLabel(dl, now)} kaldı · 2 saat kala
+          WhatsApp
+        </>
+      ) : (
+        <>Talep toplama kapandı · {trDay(dl.date)} {dl.time}</>
+      )}
+    </div>
+  )
+}
 
 /** Öne çıkan tek bilgi kutusu — fiyat gibi ana değer vurgulu gösterilir */
 function FactTile({ label, value, accent = false }: { label: string; value: string | null; accent?: boolean }) {
@@ -181,12 +211,17 @@ export default function IpoFeed({ onTrack }: { onTrack: (f: IpoFeedItem) => void
   const main = useMemo(() => rows.filter((r) => !r.is_draft), [rows])
   const drafts = useMemo(() => rows.filter((r) => r.is_draft), [rows])
   const sel = rows.find((r) => r.slug === selected) ?? main[0] ?? null
+  const now = new Date()
+  const todayTR = new Date(now.getTime() + 3 * 3600 * 1000).toISOString().slice(0, 10)
 
   if (loading) return <Spinner />
 
   const listRow = (r: IpoFeedItem) => {
     const isSel = sel?.slug === r.slug
     const badge = r.badge ? BADGES[r.badge] : null
+    // Bugün son gün ve henüz kapanmadıysa listede de uyarı dursun
+    const dl = parseIpoDeadline(r.detail?.tarih ?? r.date_text)
+    const lastDay = dl && dl.date === todayTR && deadlineAt(dl) > now
     return (
       <button
         key={r.slug}
@@ -209,7 +244,11 @@ export default function IpoFeed({ onTrack }: { onTrack: (f: IpoFeedItem) => void
             <div className="text-xs text-muted mt-0.5">{r.date_text ?? '—'}</div>
           </div>
           <div className="shrink-0 text-right">
-            {badge && <Badge tone={badge.tone}>{badge.label}</Badge>}
+            {lastDay ? (
+              <Badge tone="warn">Son gün · {dl.time}</Badge>
+            ) : (
+              badge && <Badge tone={badge.tone}>{badge.label}</Badge>
+            )}
             {r.price_text && <div className="text-xs text-muted num mt-0.5">{r.price_text}</div>}
           </div>
         </div>
@@ -287,6 +326,7 @@ export default function IpoFeed({ onTrack }: { onTrack: (f: IpoFeedItem) => void
                       )}
                     </div>
                     <div className="text-xs text-muted mt-0.5">{sel.date_text ?? '—'}</div>
+                    <DeadlineLine item={sel} now={now} />
                   </div>
                   <div className="flex gap-2">
                     <a

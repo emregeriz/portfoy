@@ -8,3 +8,6 @@ project_id = "wihfycgxdvazhgnnprhz"
 
 [functions.custom-reminders]
 verify_jwt = true
+
+[functions.ipo-deadline]
+verify_jwt = true

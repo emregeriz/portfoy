@@ -13,6 +13,7 @@ import StatCard from '../components/StatCard'
 import { Badge, Card, Empty, ErrorBox, Modal, PageHeader, Spinner } from '../components/ui'
 import { CURRENCIES, formatNumber, formatPercent, formatTRY, parseAmount } from '../lib/currency'
 import { todayISO } from '../lib/calc'
+import { settleLabel, settlementDate } from '../lib/settlement'
 import { computeHoldings, holdingTotals, DEFAULT_TAX_RATE } from '../lib/holdings'
 import { useCorporate } from '../hooks/useCorporate'
 import CorporatePanel from '../components/CorporatePanel'
@@ -81,6 +82,12 @@ export default function Trades() {
   const [tradeAccount, setTradeAccount] = useState('')
   /** Paranın yatacağı / çıkacağı hesap; CASH_NONE ise nakit hareketi yazılmaz */
   const [cashAccount, setCashAccount] = useState(CASH_NONE)
+  /** Tarih ve saat kontrollü tutulur ki takas günü yazarken canlı görünsün */
+  const [tradeDate, setTradeDate] = useState(todayISO())
+  const [tradeTime, setTradeTime] = useState('')
+  /** Yazılan sembol — katalogdaki valörü (settle_days) bulmak için */
+  const [symbolInput, setSymbolInput] = useState('')
+  const today = todayISO()
 
   /** Hesap bazında nakit bakiyesi — form altında "bakiye" ipucu için */
   const cashBalanceOf = useMemo(() => {
@@ -178,6 +185,9 @@ export default function Trades() {
       setAmount('')
       setOrderAmount('')
       setCurrency('TRY')
+      setTradeDate(todayISO())
+      setTradeTime('')
+      setSymbolInput('')
       const acc = accountFilter !== NO_ACCOUNT ? accountFilter : ''
       setTradeAccount(acc)
       setCashAccount(acc || CASH_NONE)
@@ -190,6 +200,9 @@ export default function Trades() {
       setAmount(String(t.amount))
       setOrderAmount('')
       setCurrency(t.currency)
+      setTradeDate(t.trade_date)
+      setTradeTime(t.trade_time?.slice(0, 5) ?? '')
+      setSymbolInput(t.assets?.symbol ?? '')
       setTradeAccount(t.account_id ?? '')
       // Daha önce nakde işlenmişse o hesap korunur; işlenmemiş eski kayıtta
       // işlemin kendi hesabı önerilir — düzenleyince para yerine otursun.
@@ -334,7 +347,8 @@ export default function Trades() {
         account_id: tradeAccount || null,
         asset_id: asset?.id ?? null,
         side,
-        trade_date: String(fd.get('trade_date') ?? todayISO()),
+        trade_date: String(fd.get('trade_date') || todayISO()),
+        trade_time: String(fd.get('trade_time') || '') || null,
         quantity,
         unit_price: unitPrice,
         amount: total,
@@ -747,6 +761,25 @@ export default function Trades() {
                 <tr key={t.id} className="hover:bg-surface2/50">
                   <td className="td whitespace-nowrap text-muted">
                     {format(parseISO(t.trade_date), 'd MMM yyyy', { locale: tr })}
+                    {t.trade_time && <span className="ml-1 text-xs">{t.trade_time.slice(0, 5)}</span>}
+                    {t.side === 'satis' &&
+                      (() => {
+                        // Satış parası takas gününe kadar yolda — o güne kadar burada yazar
+                        const sd = settlementDate({
+                          tradeDate: t.trade_date,
+                          tradeTime: t.trade_time,
+                          kind: t.assets?.kind ?? 'hisse',
+                          settleDays: t.assets?.settle_days,
+                        })
+                        return sd > today ? (
+                          <div
+                            className="text-xs text-amber-600 dark:text-amber-400"
+                            title="Takas — para bu gün hesaba geçer"
+                          >
+                            para {format(parseISO(sd), 'd MMM', { locale: tr })}
+                          </div>
+                        ) : null
+                      })()}
                   </td>
                   <td className="td">
                     <Badge tone={t.side === 'alis' ? 'accent' : 'pos'}>
@@ -826,16 +859,64 @@ export default function Trades() {
               </div>
             </div>
             <div>
-              <label className="label">Tarih</label>
-              <input
-                type="date"
-                name="trade_date"
-                className="w-full"
-                defaultValue={editing?.trade_date ?? todayISO()}
-                required
-              />
+              <label className="label">Tarih · Saat</label>
+              <div className="flex gap-2">
+                <input
+                  type="date"
+                  name="trade_date"
+                  className="w-full"
+                  value={tradeDate}
+                  onChange={(e) => setTradeDate(e.target.value)}
+                  required
+                />
+                <input
+                  type="time"
+                  name="trade_time"
+                  className="w-28"
+                  value={tradeTime}
+                  onChange={(e) => setTradeTime(e.target.value)}
+                  title="Emir saati — fonda 13:00 sonrası takas bir gün ileri kayar"
+                />
+              </div>
             </div>
           </div>
+
+          {side === 'satis' &&
+            (kind === 'hisse' || kind === 'fon') &&
+            tradeDate &&
+            (() => {
+              // Takas günü: hissede T+2; fonda valör (TLY/DFI/THF/DOH 2, TMV 3),
+              // 13:00 sonrası emirde bir gün daha
+              const known = assets.find(
+                (a) => a.symbol.toUpperCase() === symbolInput.trim().toUpperCase()
+              )
+              const s = settleLabel({
+                tradeDate,
+                tradeTime: tradeTime || null,
+                kind,
+                settleDays: known?.settle_days ?? null,
+              })
+              const neden =
+                kind === 'fon'
+                  ? tradeTime
+                    ? tradeTime >= '13:00'
+                      ? '13:00 sonrası emir, +1 gün'
+                      : '13:00 öncesi emir'
+                    : 'saat girilmedi, 13:00 öncesi sayıldı'
+                  : 'hisse T+2'
+              return (
+                <p className="-mt-1 text-xs text-muted">
+                  Para hesaba{' '}
+                  <span className="text-ink font-medium">
+                    {format(parseISO(s.date), 'd MMM EEEE', { locale: tr })}
+                  </span>{' '}
+                  geçer · T+{s.days} ({neden})
+                  {kind === 'fon' && !known && symbolInput && (
+                    <span> · fon kataloğa ilk kez giriyor, valör 2 gün varsayıldı</span>
+                  )}
+                </p>
+              )
+            })()}
 
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -848,6 +929,7 @@ export default function Trades() {
                 defaultValue={editing?.assets?.symbol ?? ''}
                 required
                 onChange={(e) => {
+                  setSymbolInput(e.target.value)
                   // Katalogda kayıtlı kalemin türü ve stopaj durumu gelsin;
                   // yoksa kutucuk boş kalır ve kaydederken kalem ezilmez
                   const sym = e.target.value.trim().toUpperCase()
