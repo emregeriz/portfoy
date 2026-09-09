@@ -180,13 +180,20 @@ Deno.serve(async (req: Request) => {
 
   const due: Due[] = []
   const missed: string[] = []
+  /** Tarihi okunmuş ama vakti gelmemiş arzlar — cevapta görünür, kontrol için */
+  const upcoming: { slug: string; code: string | null; deadline: Deadline; minutesLeft: number }[] = []
+  const unparsed: string[] = []
   for (const row of (data ?? []) as FeedRow[]) {
     // Detay sayfasındaki tarih saat de taşır; liste metni yalnızca gün
     const deadline = parseDeadline(row.detail?.tarih) ?? parseDeadline(row.date_text)
-    if (!deadline) continue
+    if (!deadline) {
+      unparsed.push(row.slug)
+      continue
+    }
     const minutesLeft = Math.round((deadlineAt(deadline).getTime() - now.getTime()) / 60000)
     if (minutesLeft <= 0) missed.push(row.slug)
     else if (minutesLeft <= lead) due.push({ row, deadline, minutesLeft })
+    else upcoming.push({ slug: row.slug, code: row.bist_code, deadline, minutesLeft })
   }
 
   // Kapanışı geçmişler: mesaj yok, damga var — bir daha bakılmasın
@@ -237,6 +244,7 @@ Deno.serve(async (req: Request) => {
       ok: errors.length === 0,
       checked: data?.length ?? 0,
       due: due.map((d) => ({ slug: d.row.slug, deadline: d.deadline, minutesLeft: d.minutesLeft })),
+      upcoming, unparsed,
       sent, missed: missed.length, log, errors,
     }),
     { headers: { ...CORS, 'Content-Type': 'application/json' } },

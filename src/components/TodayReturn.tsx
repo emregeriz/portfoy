@@ -4,7 +4,13 @@ import { format, parseISO } from 'date-fns'
 import { tr } from 'date-fns/locale'
 import { useAuth } from '../hooks/useAuth'
 import { useTodayReturn } from '../hooks/useTodayReturn'
-import { usePeriodReturn, PERIODS, PERIOD_LABEL, type ReturnPeriod } from '../hooks/usePeriodReturn'
+import {
+  usePeriodReturn,
+  PERIODS,
+  PERIOD_LABEL,
+  PERIOD_TITLE,
+  type ReturnPeriod,
+} from '../hooks/usePeriodReturn'
 import { formatNumber, formatPercent, formatTRY } from '../lib/currency'
 import { todayISO } from '../lib/calc'
 
@@ -23,6 +29,11 @@ import { todayISO } from '../lib/calc'
  * kapanırsa kazancın büyük kısmı satış priminden gelir, kâğıt ise yalnızca
  * %0,7 oynamıştır. Satış payı bu yüzden "satıştan +₺…" olarak ayrı yazılır;
  * gün kârının gün başı pozisyona oranı tutarın üzerinde ipucu olarak durur.
+ *
+ * Dönem seçenekleri (son 7 gün, son 30 gün, 3 ay, yıl) kayan penceredir ve
+ * günlük kâr defterinin satırlarını toplar; bu yüzden sayfadaki günlerle
+ * birebir tutar. Bir yıllık defter her sayfa açılışında kurulmasın diye
+ * dönem verisi ilk kez pencere açıldığında yüklenir.
  */
 /** Kırılımda başta görünen kalem sayısı — gerisi "daha fazla göster" ile açılır */
 const MOVERS_SHOWN = 10
@@ -48,10 +59,18 @@ export default function TodayReturn() {
   } = useTodayReturn(user?.id)
   const [open, setOpen] = useState(false)
   const [showAllMovers, setShowAllMovers] = useState(false)
-  /** null = bugün; diğerleri haftalık/aylık/3 aylık/yıllık */
+  /** null = bugün; diğerleri son 7 gün / 30 gün / 3 ay / yıl */
   const [period, setPeriod] = useState<ReturnPeriod | null>(null)
-  const periodData = usePeriodReturn(user?.id)
+  /** Pencere bir kez açıldı mı — dönem defteri ancak o zaman kurulur */
+  const [armed, setArmed] = useState(false)
+  const periodData = usePeriodReturn(armed ? user?.id : undefined)
   const sel = period ? (periodData.results?.[period] ?? null) : null
+  /** Seçili dönemde ölçülebilir hareket var mı */
+  const selHasData = !!sel && sel.days.length > 0
+  /** Dönemin kâğıt bazlı dökümü — nema ve temettü yukarıda ayrı satırda */
+  const periodMovers = sel
+    ? sel.items.filter((i) => i.source === 'portfoy' || i.source === 'ipo')
+    : []
 
   if (loading) {
     return (
@@ -78,9 +97,16 @@ export default function TodayReturn() {
   return (
     <div className="relative">
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          setArmed(true)
+          setOpen((v) => !v)
+        }}
         className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border num transition-opacity hover:opacity-80 ${tone}`}
-        title="Bugünün getirisi — fon/hisse + halka arz + nema"
+        title={
+          period
+            ? `${PERIOD_TITLE[period]} — fon/hisse + halka arz + nema + temettü`
+            : 'Bugünün getirisi — fon/hisse + halka arz + nema'
+        }
         aria-haspopup="menu"
         aria-expanded={open}
       >
@@ -105,7 +131,7 @@ export default function TodayReturn() {
           <div className="absolute right-0 mt-2 z-20 w-80 rounded-lg border border-border bg-surface shadow-xl overflow-hidden">
             <div className="px-3 py-2 border-b border-border flex items-center justify-between gap-2">
               <span className="text-sm font-medium text-ink">
-                {period ? `${PERIOD_LABEL[period]} getirisi` : 'Bugünün getirisi'}
+                {period ? PERIOD_TITLE[period] : 'Bugünün getirisi'}
               </span>
               <button
                 className="text-xs text-muted hover:text-ink"
@@ -140,9 +166,14 @@ export default function TodayReturn() {
                   <div className="text-muted py-2 text-center">Hesaplanıyor…</div>
                 ) : !sel ? (
                   <div className="text-muted py-2 text-center">Veri yok.</div>
+                ) : !selHasData ? (
+                  <div className="text-muted py-2 text-center">
+                    Bu aralıkta ölçülebilir bir hareket yok.
+                  </div>
                 ) : (
                   <>
                     <Row label="Fon & hisse" value={sel.priceDelta} />
+                    {sel.ipoDelta !== 0 && <Row label="Halka arz" value={sel.ipoDelta} />}
                     {sel.nema !== 0 && <Row label="Nema geliri" value={sel.nema} />}
                     {sel.dividend !== 0 && <Row label="Temettü (net)" value={sel.dividend} />}
                     <div className="flex justify-between gap-3 pt-1.5 border-t border-border font-semibold text-ink">
@@ -193,6 +224,38 @@ export default function TodayReturn() {
                     {formatTRY(Math.abs(total))}
                   </span>
                 </div>
+              </div>
+            )}
+
+            {period && selHasData && periodMovers.length > 0 && (
+              <div className="px-3 py-2 border-t border-border space-y-1 max-h-72 overflow-y-auto">
+                <div className="text-[11px] uppercase tracking-wide text-muted">En çok oynayan</div>
+                {(showAllMovers ? periodMovers : periodMovers.slice(0, MOVERS_SHOWN)).map((m) => (
+                  <div key={m.key} className="flex justify-between gap-3 text-xs">
+                    <span className="text-ink min-w-0">
+                      {m.symbol}
+                      {m.source === 'ipo' && <span className="ml-1 text-muted">arz</span>}
+                      <span className="block text-[11px] text-muted num">
+                        {m.dayCount} gün hareket etti
+                      </span>
+                    </span>
+                    <span className={`num shrink-0 ${m.delta >= 0 ? 'text-pos' : 'text-neg'}`}>
+                      {m.delta >= 0 ? '+' : '−'}
+                      {formatTRY(Math.abs(m.delta))}
+                    </span>
+                  </div>
+                ))}
+                {periodMovers.length > MOVERS_SHOWN && (
+                  <button
+                    type="button"
+                    className="w-full text-center text-[11px] text-muted hover:text-ink pt-1"
+                    onClick={() => setShowAllMovers((v) => !v)}
+                  >
+                    {showAllMovers
+                      ? 'Daha az göster'
+                      : `Daha fazla göster (${periodMovers.length - MOVERS_SHOWN})`}
+                  </button>
+                )}
               </div>
             )}
 
@@ -304,11 +367,26 @@ export default function TodayReturn() {
             )}
 
             <div className="px-3 py-2 border-t border-border text-[11px] text-muted space-y-1">
-              {period && sel && (
+              {period && sel && !periodData.loading && (
                 <div>
-                  {format(parseISO(sel.from), 'd MMMM yyyy', { locale: tr })} → bugün. Araya konan
-                  para kâr sayılmaz: dönem içi alımlar maliyete, satışlar gelire yazılır.
-                  {sel.unmeasured > 0 && ` ${sel.unmeasured} kalem ölçülemedi — dönem başı fiyatı yok.`}
+                  {format(parseISO(sel.from), 'd MMMM', { locale: tr })} → bugün
+                  {selHasData && (
+                    <>
+                      {' '}
+                      · {sel.days.length} hareketli gün · {sel.winDays} gün kârda
+                    </>
+                  )}
+                  . Günlük kârların toplamıdır; araya konan para kâr sayılmaz.
+                  {periodData.priceDate && periodData.priceDate !== todayISO() && (
+                    <>
+                      {' '}
+                      Fiyatlar: {format(parseISO(periodData.priceDate), 'd MMMM', { locale: tr })}.
+                    </>
+                  )}
+                  {sel.unmeasured > 0 &&
+                    ` ${sel.unmeasured} kalem ölçülemedi — önceki gün fiyatı yok.`}
+                  {sel.bulkEntry &&
+                    ' Dönemde geçmiş pozisyonların toplu girildiği bir gün var; o günün kârı toplamda duruyor.'}
                 </div>
               )}
               {period && periodData.error && <div className="text-neg">{periodData.error}</div>}
