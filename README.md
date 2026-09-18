@@ -465,6 +465,7 @@ etkilenmez.
 |---|---|
 | `/login` | E-posta + şifre girişi (kayıt kapalı) |
 | `/` | Dashboard: toplam varlık/borç/net değer, zaman serisi, dağılım grafikleri |
+| `/para-gitti` | Para Gitti Baby: kaybolan fonlar %10 tıraşlı, nakit ve hisse tıraşsız, TMV ve tasfiye için "ne kadarı döner" sürgüsü (aşağıda) |
 | `/trades` | Alım / satım defteri, pozisyonlar, vergi sonrası kâr |
 | `/trades/takip` | Günlük takip tablosu — Alım/Satım altında sekme (kullanıcıya göre gizlenebilir) |
 | `/accounts` | Banka/kurum yönetimi + güncel bakiye ve pay |
@@ -475,7 +476,31 @@ etkilenmez.
 | `/hedef` | Hedefler ve birikim hesaplayıcısı (aşağıda) |
 | `/reminders` | Serbest hatırlatıcılar (profil menüsünden) |
 
-Eski adresler (`/takip`, `/nakit`, `/transactions`) yeni yerlerine yönlendirir.
+Eski adresler (`/takip`, `/nakit`, `/transactions`, `/trades/para-gitti`) yeni yerlerine yönlendirir.
+
+### Para Gitti Baby
+
+Üst menünün en solunda, Dashboard'dan önce: kaybolan fonların anıt sayfası
+ve "elde gerçekten ne var" sorusunun cevabı. Rakamlar Dashboard'la aynı
+kaynaktan (`usePortfolio`) okunur; şaka olan ton, sayılar değil.
+
+| Parça | Nasıl sayılır |
+|---|---|
+| **THF · TLY · DOH · DFI** | Defterdeki pozisyon, **%10 tıraşlı** — "bu para bu haliyle gelmez" kesintisi |
+| **Nakit** | Kendi hesaplar + arz hesapları + arzda bloke, tıraşsız |
+| **Hisse** | Alım/satım defteri + arz dağıtımları, güncel fiyattan, tıraşsız |
+| **TMV** | Kağıt üstündeki tutar ve adet gösterilir ama ana paraya girmez |
+| **Tasfiye** | Kullanıcıya göre sabit: Emre'de 2 TLY, Alper'de DOH'un tamamı (`ParaGitti.tsx` → `LIQUIDATION`). Anıt listesinden düşülür, ana paraya girmez |
+
+Üç kart aynı kapsamı anlatır: **Kağıt üstünde** (hepsi ekranda yazdığı gibi),
+**Ana para** (tıraşlı fon + nakit + hisse + sürgüyle eklenenler) ve
+**Aradaki fark** (tıraş + sayılmayan TMV + sayılmayan tasfiye).
+
+TMV ve Tasfiye kutularında ses açar gibi bir sürgü var: kaç yüzdesinin
+döneceğini seçip **Ana paraya ekle** deyince o tutar ana paraya girer.
+Sürgüyü sonradan oynatmak eklenen tutarı değiştirmez, **Güncelle** gerekir;
+**Çıkar** geri alır. Bu bir tahmindir, kayıt değil: veritabanına yazılmaz,
+sayfadan çıkıp girince sıfırlanır.
 
 ### Hedef
 
@@ -543,7 +568,7 @@ aktive edip yeni apikey'i `user_wa_keys`'e yaz — bu arada kanalı
 
 Üst menü ve sayfa içi sekmeler `profiles.nav_hidden` dizisine bakar:
 içindeki anahtarlar o kullanıcıda görünmez. Anahtarlar `Layout.tsx`'teki
-NAV ve `App.tsx`'teki sekme `key` değerleridir (`dashboard`, `trades`,
+NAV ve `App.tsx`'teki sekme `key` değerleridir (`para-gitti`, `dashboard`, `trades`,
 `takip`, `accounts`, `nakit`, `ipo`, `gunluk`, `transactions`, `hedef`).
 Kod değiştirmeden tek SQL ile ayarlanır:
 

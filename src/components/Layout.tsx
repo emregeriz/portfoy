@@ -13,8 +13,12 @@ import TodayReturn from './TodayReturn'
  * Takip, Nakit ve Gelir/Gider artık başlık değil, sayfa içi sekme:
  * Alım/Satım → Takip · Hesaplar → Nakit · Günlük Kâr → Gelir/Gider
  * (bkz. App.tsx). Sekmeler de aynı `nav_hidden` anahtarlarını dinler.
+ *
+ * Para Gitti Baby bilerek en başta, Dashboard'ın solunda: önce gidene bakılır,
+ * sonra kalana.
  */
 const NAV = [
+  { key: 'para-gitti', to: '/para-gitti', label: 'Para Gitti Baby' },
   { key: 'dashboard', to: '/', label: 'Dashboard', end: true },
   { key: 'trades', to: '/trades', label: 'Alım / Satım' },
   { key: 'accounts', to: '/accounts', label: 'Hesaplar' },

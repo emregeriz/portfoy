@@ -32,7 +32,6 @@ function Protected() {
 const TRADE_TABS: PageTab[] = [
   { key: 'trades', to: '/trades', label: 'Alım / Satım', end: true },
   { key: 'takip', to: '/trades/takip', label: 'Takip' },
-  { key: 'para-gitti', to: '/trades/para-gitti', label: 'Para Gitti Baby' },
 ]
 const ACCOUNT_TABS: PageTab[] = [
   { key: 'accounts', to: '/accounts', label: 'Hesaplar', end: true },
@@ -56,11 +55,11 @@ export default function App() {
             <Route path="/login" element={<Login />} />
             <Route element={<Protected />}>
               <Route index element={<Dashboard />} />
+              <Route path="para-gitti" element={<ParaGitti />} />
 
               <Route path="trades" element={<TabbedPage items={TRADE_TABS} />}>
                 <Route index element={<Trades />} />
                 <Route path="takip" element={<Takip />} />
-                <Route path="para-gitti" element={<ParaGitti />} />
               </Route>
 
               <Route path="accounts" element={<TabbedPage items={ACCOUNT_TABS} />}>
@@ -80,6 +79,7 @@ export default function App() {
 
               {/* Eski adresler — yer imleri ve paylaşılmış bağlantılar kopmasın */}
               <Route path="takip" element={<Navigate to="/trades/takip" replace />} />
+              <Route path="trades/para-gitti" element={<Navigate to="/para-gitti" replace />} />
               <Route path="nakit" element={<Navigate to="/accounts/nakit" replace />} />
               <Route path="transactions" element={<Navigate to="/gunluk/gelir-gider" replace />} />
             </Route>

@@ -71,7 +71,7 @@ export function usePortfolio(scope: string) {
    * sayılır; ikisinde birden geçen varlık çift sayılmasın diye snapshot
    * tarafı bu semboller için yok sayılır (aşağıda tradedAssetIds).
    */
-  const { rows: trades } = useTable<TradeWithRefs>('trades', {
+  const { rows: trades, loading: tradesLoading } = useTable<TradeWithRefs>('trades', {
     userId: isTotal ? null : scope,
     orderBy: 'trade_date',
     select: TRADE_SELECT,
@@ -276,6 +276,8 @@ export function usePortfolio(scope: string) {
   return {
     // kapsam / snapshot
     isTotal, error, last, prev, netChange,
+    /** Alım/satım defteri henüz gelmediyse true — sayfa boş rakam yerine bekleme gösterir */
+    loading: tradesLoading,
     // fiyat
     posLoading, latestDate, refreshing, refresh, priceError,
     // pozisyonlar ve dağılım
