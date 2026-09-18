@@ -12,6 +12,7 @@ import Ipo from './pages/Ipo'
 import Daily from './pages/Daily'
 import Transactions from './pages/Transactions'
 import Takip from './pages/Takip'
+import ParaGitti from './pages/ParaGitti'
 import Trades from './pages/Trades'
 import Goals from './pages/Goals'
 import Reminders from './pages/Reminders'
@@ -31,6 +32,7 @@ function Protected() {
 const TRADE_TABS: PageTab[] = [
   { key: 'trades', to: '/trades', label: 'Alım / Satım', end: true },
   { key: 'takip', to: '/trades/takip', label: 'Takip' },
+  { key: 'para-gitti', to: '/trades/para-gitti', label: 'Para Gitti Baby' },
 ]
 const ACCOUNT_TABS: PageTab[] = [
   { key: 'accounts', to: '/accounts', label: 'Hesaplar', end: true },
@@ -58,6 +60,7 @@ export default function App() {
               <Route path="trades" element={<TabbedPage items={TRADE_TABS} />}>
                 <Route index element={<Trades />} />
                 <Route path="takip" element={<Takip />} />
+                <Route path="para-gitti" element={<ParaGitti />} />
               </Route>
 
               <Route path="accounts" element={<TabbedPage items={ACCOUNT_TABS} />}>
