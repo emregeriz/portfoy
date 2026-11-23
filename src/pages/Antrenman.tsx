@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { Link, useLocation } from 'react-router-dom'
 
 /**
  * Antrenman — bizim salon programı.
@@ -323,6 +324,9 @@ const CSS = `
 export default function Antrenman() {
   const [pick, setPick] = useState<Record<string, string>>(() => readJSON(PICK_KEY, {}))
   const [done, setDone] = useState<string[]>(() => readJSON(doneKey(), []))
+  // Portföy logosundan gelindiyse o sayfaya, doğrudan açıldıysa Dashboard'a
+  const from = (useLocation().state as { from?: string } | null)?.from
+  const backTo = from && from !== '/antrenman' ? from : '/'
 
   useEffect(() => {
     const prevTitle = document.title
@@ -371,7 +375,17 @@ export default function Antrenman() {
               'radial-gradient(60% 80% at 10% 0%, rgba(251,113,133,.22), transparent 60%), radial-gradient(50% 70% at 90% 10%, rgba(56,189,248,.18), transparent 60%)',
           }}
         />
-        <div className="relative mx-auto max-w-5xl px-4 pb-5 pt-[max(1.5rem,env(safe-area-inset-top))]">
+        <div className="relative mx-auto max-w-5xl px-4 pb-5 pt-[max(1rem,env(safe-area-inset-top))]">
+          {/* Portföy logosunun ikizi: basınca gelinen sayfaya geri döner */}
+          <Link
+            to={backTo}
+            className="mb-4 inline-flex items-center gap-1.5 rounded-full bg-white/[0.07] py-1.5 pl-2.5 pr-3.5 text-sm font-semibold tracking-tight ring-1 ring-white/10 active:bg-white/15"
+          >
+            <svg viewBox="0 0 20 20" className="h-4 w-4 text-white/60" fill="none" stroke="currentColor" strokeWidth={2.2}>
+              <path d="M12.5 4.5L7 10l5.5 5.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            ₺ Portföy
+          </Link>
           <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-white/50">Salon programı</p>
           <h1 className="mt-1 text-3xl font-extrabold tracking-tight sm:text-4xl">Antrenman</h1>
           <p className="mt-1 text-sm text-white/55">

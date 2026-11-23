@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 import { useAuth } from '../hooks/useAuth'
 import { useTheme } from '../hooks/useTheme'
@@ -32,6 +32,7 @@ export default function Layout() {
   const { theme, toggle } = useTheme()
   const { masked, toggle: toggleMask } = useMask()
   const navigate = useNavigate()
+  const location = useLocation()
   const [open, setOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
 
@@ -47,9 +48,15 @@ export default function Layout() {
     <div className="min-h-full flex flex-col">
       <header className="sticky top-0 z-20 bg-surface/95 backdrop-blur border-b border-border">
         <div className="mx-auto max-w-7xl px-4 h-14 flex items-center gap-4">
-          <NavLink to="/" className="font-semibold tracking-tight text-ink shrink-0">
+          {/* Logo antrenman sayfasına açılan kapı; oradaki logo buraya, hangi
+              sayfadan gelindiyse ona geri döndürür (state.from) */}
+          <Link
+            to="/antrenman"
+            state={{ from: location.pathname + location.search }}
+            className="font-semibold tracking-tight text-ink shrink-0"
+          >
             ₺ Portföy
-          </NavLink>
+          </Link>
 
           <nav className="hidden md:flex items-center gap-1 flex-1 min-w-0 overflow-x-auto">
             {nav.map((item) => (
