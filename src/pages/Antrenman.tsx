@@ -1,24 +1,22 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useEffect, type CSSProperties } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 
 /**
  * Antrenman — bizim salon programı.
  *
- * Uygulamanın geri kalanından tamamen bağımsız: giriş istemez, menü/Layout
- * yok, tema tercihine bakmaz (hep koyu). Telefonda salonda açılıp kaydırarak
- * bakılsın diye tek sütun, büyük görsel, büyük dokunma alanı.
+ * Uygulamanın geri kalanından bağımsız: giriş istemez, menü/Layout yok,
+ * tema tercihine bakmaz (hep koyu). Portföy logosu buraya açılır, buradaki
+ * logo da gelinen sayfaya geri götürür.
  *
- * Her kas grubunda bir ya da birkaç "slot" var. Bir slotta birden fazla
- * hareket varsa bunlar birbirinin alternatifidir — o gün hangisi boşsa onu
- * seçersin, seçim hatırlanır. Bacak gibi slotları ayrı olan gruplarda her
- * hareket yapılır.
+ * Her kas grubunda bir ya da birkaç "slot" var; her slot ayrı bir satır,
+ * slotlar alt alta. Bir slotta birden fazla hareket varsa ilki ana hareket,
+ * diğerleri alternatifi — aynı satırda yanında ayrı kart olarak durur
+ * (telefonda yana kaydırılır). Bacak gibi her slotu tek hareketli gruplarda
+ * hepsi yapılır.
  *
  * Görseller free-exercise-db'den (Unlicense / kamu malı): her hareketin
  * başlangıç ve bitiş karesi, `public/antrenman/<slug>-0|1.jpg`. İkisi
  * arasında geçiş yapılarak hareket gösterilir.
- *
- * "Yaptım" işaretleri ve alternatif seçimi yalnızca bu cihazın tarayıcısında
- * tutulur; işaretler güne bağlı, ertesi gün kendiliğinden sıfırlanır.
  */
 
 interface Move {
@@ -287,26 +285,6 @@ const PROGRAM: Group[] = [
 const ALL_SLOTS = PROGRAM.flatMap((g) => g.slots)
 const MOVE_COUNT = ALL_SLOTS.reduce((n, s) => n + s.moves.length, 0)
 
-const PICK_KEY = 'antrenman:pick'
-const doneKey = () => `antrenman:done:${new Date().toLocaleDateString('sv-SE')}`
-
-function readJSON<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key)
-    return raw ? (JSON.parse(raw) as T) : fallback
-  } catch {
-    return fallback
-  }
-}
-
-function writeJSON(key: string, value: unknown) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value))
-  } catch {
-    /* gizli sekme vb. — hafıza olmadan da çalışır */
-  }
-}
-
 const CSS = `
 @keyframes ant-frame { 0%, 45% { opacity: 0 } 50%, 95% { opacity: 1 } 100% { opacity: 0 } }
 @keyframes ant-dot-a { 0%, 45% { opacity: 1 } 50%, 95% { opacity: .3 } 100% { opacity: 1 } }
@@ -322,8 +300,6 @@ const CSS = `
 `
 
 export default function Antrenman() {
-  const [pick, setPick] = useState<Record<string, string>>(() => readJSON(PICK_KEY, {}))
-  const [done, setDone] = useState<string[]>(() => readJSON(doneKey(), []))
   // Portföy logosundan gelindiyse o sayfaya, doğrudan açıldıysa Dashboard'a
   const from = (useLocation().state as { from?: string } | null)?.from
   const backTo = from && from !== '/antrenman' ? from : '/'
@@ -339,31 +315,11 @@ export default function Antrenman() {
     }
   }, [])
 
-  const choose = (slotId: string, moveId: string) => {
-    const next = { ...pick, [slotId]: moveId }
-    setPick(next)
-    writeJSON(PICK_KEY, next)
-  }
-
-  const toggle = (slotId: string) => {
-    const next = done.includes(slotId) ? done.filter((d) => d !== slotId) : [...done, slotId]
-    setDone(next)
-    writeJSON(doneKey(), next)
-  }
-
-  const reset = () => {
-    setDone([])
-    writeJSON(doneKey(), [])
-  }
-
-  const doneCount = done.filter((d) => ALL_SLOTS.some((s) => s.id === d)).length
-  const pct = Math.round((doneCount / ALL_SLOTS.length) * 100)
-
   const jump = (key: string) =>
     document.getElementById(`grup-${key}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 
   return (
-    <div className="min-h-full bg-[#0a0c11] text-white" style={{ fontFeatureSettings: "'tnum' 1" }}>
+    <div className="min-h-full bg-[#0a0c11] text-white">
       <style>{CSS}</style>
 
       {/* Başlık */}
@@ -391,51 +347,26 @@ export default function Antrenman() {
           <p className="mt-1 text-sm text-white/55">
             {PROGRAM.length} kas grubu · {ALL_SLOTS.length} hareket · {MOVE_COUNT - ALL_SLOTS.length} alternatif
           </p>
-
-          <div className="mt-4 flex items-center gap-3">
-            <div className="h-2 flex-1 overflow-hidden rounded-full bg-white/10">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-[#fb7185] via-[#fbbf24] to-[#34d399] transition-[width] duration-500"
-                style={{ width: `${pct}%` }}
-              />
-            </div>
-            <span className="text-sm font-semibold tabular-nums">
-              {doneCount}/{ALL_SLOTS.length}
-            </span>
-            {doneCount > 0 && (
-              <button
-                onClick={reset}
-                className="rounded-full px-2.5 py-1 text-xs font-medium text-white/60 ring-1 ring-white/15 active:bg-white/10"
-              >
-                Sıfırla
-              </button>
-            )}
-          </div>
         </div>
       </header>
 
       {/* Kas grubu çubuğu */}
       <nav className="sticky top-0 z-20 border-b border-white/5 bg-[#0a0c11]/85 backdrop-blur-md">
         <div className="ant-noscroll mx-auto flex max-w-5xl gap-2 overflow-x-auto px-4 py-3">
-          {PROGRAM.map((g) => {
-            const total = g.slots.length
-            const d = g.slots.filter((s) => done.includes(s.id)).length
-            return (
-              <button
-                key={g.key}
-                onClick={() => jump(g.key)}
-                className="flex shrink-0 items-center gap-2 rounded-full bg-white/[0.06] py-1.5 pl-2.5 pr-3 text-sm font-medium ring-1 ring-white/10 active:bg-white/10"
-              >
-                <span className="h-2.5 w-2.5 rounded-full" style={{ background: g.color }} />
-                {g.title}
-                {d === total && <span className="text-xs text-[#34d399]">✓</span>}
-              </button>
-            )
-          })}
+          {PROGRAM.map((g) => (
+            <button
+              key={g.key}
+              onClick={() => jump(g.key)}
+              className="flex shrink-0 items-center gap-2 rounded-full bg-white/[0.06] py-1.5 pl-2.5 pr-3 text-sm font-medium ring-1 ring-white/10 active:bg-white/10"
+            >
+              <span className="h-2.5 w-2.5 rounded-full" style={{ background: g.color }} />
+              {g.title}
+            </button>
+          ))}
         </div>
       </nav>
 
-      <main className="mx-auto max-w-5xl space-y-9 px-4 pb-[max(2.5rem,env(safe-area-inset-bottom))] pt-6">
+      <main className="mx-auto max-w-5xl space-y-10 px-4 pb-[max(2.5rem,env(safe-area-inset-bottom))] pt-6">
         {PROGRAM.map((g, gi) => (
           <section key={g.key} id={`grup-${g.key}`} className="scroll-mt-20" style={{ '--acc': g.color } as CSSProperties}>
             <div className="mb-3 flex items-end justify-between">
@@ -445,25 +376,38 @@ export default function Antrenman() {
                 </span>
                 <h2 className="text-xl font-bold tracking-tight">{g.title}</h2>
               </div>
-              <span className="text-xs text-white/45">
-                {g.slots.length} hareket
-                {g.slots.some((s) => s.moves.length > 1) && ' · alternatifli'}
-              </span>
+              <span className="text-xs text-white/45">{g.slots.length} hareket</span>
             </div>
             <div className="mb-4 h-px bg-gradient-to-r from-[color:var(--acc)] to-transparent opacity-50" />
 
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {g.slots.map((slot, si) => (
-                <SlotCard
-                  key={slot.id}
-                  slot={slot}
-                  index={si + 1}
-                  pickedId={pick[slot.id]}
-                  onPick={(id) => choose(slot.id, id)}
-                  done={done.includes(slot.id)}
-                  onToggle={() => toggle(slot.id)}
-                />
-              ))}
+            {/* Her hareket kendi satırında, alt alta; alternatifleri aynı
+                satırda yanında ayrı kart. Telefonda satır yana kayar,
+                sonraki kartın ucu görünür. */}
+            <div className="space-y-6">
+              {g.slots.map((slot, si) => {
+                const hasAlts = slot.moves.length > 1
+                return (
+                  <div key={slot.id}>
+                    <div className="mb-2.5 flex items-center gap-2 text-xs">
+                      <span className="font-bold tabular-nums text-[color:var(--acc)]">{si + 1}.</span>
+                      <span className="font-semibold text-white/80">{slot.moves[0].name}</span>
+                      {hasAlts && <span className="text-white/40">· {slot.moves.length - 1} alternatif</span>}
+                      {hasAlts && <span className="ml-auto text-white/35 lg:hidden">kaydır →</span>}
+                    </div>
+                    <div className="ant-noscroll -mx-4 flex snap-x snap-mandatory scroll-px-4 gap-3 overflow-x-auto px-4 lg:mx-0 lg:grid lg:grid-cols-3 lg:gap-4 lg:overflow-visible lg:px-0">
+                      {slot.moves.map((m, mi) => (
+                        <MoveCard
+                          key={m.id}
+                          move={m}
+                          role={!hasAlts ? null : mi === 0 ? 'Ana hareket' : `Alternatif ${mi}`}
+                          main={mi === 0}
+                          className={`shrink-0 snap-start lg:w-auto ${hasAlts ? 'w-[84%] md:w-[46%]' : 'w-full md:w-[46%]'}`}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
             </div>
           </section>
         ))}
@@ -478,29 +422,26 @@ export default function Antrenman() {
   )
 }
 
-function SlotCard({
-  slot,
-  index,
-  pickedId,
-  onPick,
-  done,
-  onToggle,
+function MoveCard({
+  move,
+  role,
+  main,
+  className = '',
 }: {
-  slot: Slot
-  index: number
-  pickedId?: string
-  onPick: (id: string) => void
-  done: boolean
-  onToggle: () => void
+  move: Move
+  /** Alternatifli satırlarda "Ana hareket" / "Alternatif n", tekilde yok */
+  role: string | null
+  main: boolean
+  className?: string
 }) {
-  const move = useMemo(() => slot.moves.find((m) => m.id === pickedId) ?? slot.moves[0], [slot, pickedId])
-  const hasAlts = slot.moves.length > 1
-
   return (
     <article
-      className={`overflow-hidden rounded-2xl bg-[#12151d] ring-1 transition ${
-        done ? 'ring-[#34d399]/40' : 'ring-white/[0.07]'
-      }`}
+      className={`overflow-hidden rounded-2xl bg-[#12151d] ring-1 ring-white/[0.07] ${className}`}
+      style={
+        role && main
+          ? ({ '--tw-ring-color': 'color-mix(in srgb, var(--acc) 45%, transparent)' } as CSSProperties)
+          : undefined
+      }
     >
       {/* Görsel: başlangıç ↔ bitiş karesi */}
       <div className="relative aspect-[3/2] overflow-hidden bg-black">
@@ -508,69 +449,35 @@ function SlotCard({
           src={`/antrenman/${move.img}-0.jpg`}
           alt={`${move.name} — başlangıç`}
           loading="lazy"
-          className={`absolute inset-0 h-full w-full object-cover transition ${done ? 'opacity-40 grayscale' : ''}`}
+          className="absolute inset-0 h-full w-full object-cover"
         />
         <img
           src={`/antrenman/${move.img}-1.jpg`}
           alt=""
           aria-hidden
           loading="lazy"
-          className={`ant-frame absolute inset-0 h-full w-full object-cover ${done ? 'grayscale' : ''}`}
-          style={done ? { animation: 'none', opacity: 0 } : undefined}
+          className="ant-frame absolute inset-0 h-full w-full object-cover"
         />
         <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-[#12151d] to-transparent" />
 
-        <span className="absolute left-3 top-3 rounded-md bg-black/55 px-2 py-0.5 text-xs font-bold tabular-nums backdrop-blur-sm text-[color:var(--acc)]">
-          {String(index).padStart(2, '0')}
-        </span>
-
-        {!done && (
-          <span className="absolute bottom-2.5 left-3 flex gap-1">
-            <span className="ant-dot-a h-1.5 w-4 rounded-full bg-white" />
-            <span className="ant-dot-b h-1.5 w-4 rounded-full bg-white" />
+        {role && (
+          <span
+            className={`absolute right-3 top-3 rounded-full px-2.5 py-1 text-[11px] font-bold backdrop-blur-sm ${
+              main ? 'bg-[color:var(--acc)] text-[#0a0c11]' : 'bg-black/60 text-white/85 ring-1 ring-white/20'
+            }`}
+          >
+            {role}
           </span>
         )}
 
-        <button
-          onClick={onToggle}
-          aria-pressed={done}
-          aria-label={done ? 'Yapılmadı olarak işaretle' : 'Yaptım olarak işaretle'}
-          className={`absolute right-3 top-3 flex h-10 items-center gap-1.5 rounded-full px-3.5 text-sm font-semibold backdrop-blur-sm transition active:scale-95 ${
-            done ? 'bg-[#34d399] text-[#06281b]' : 'bg-black/55 text-white ring-1 ring-white/25'
-          }`}
-        >
-          <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2.6}>
-            <path d="M4.5 10.5l3.5 3.5 7.5-8" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-          {done ? 'Yapıldı' : 'Yaptım'}
-        </button>
+        <span className="absolute bottom-2.5 left-3 flex gap-1">
+          <span className="ant-dot-a h-1.5 w-4 rounded-full bg-white" />
+          <span className="ant-dot-b h-1.5 w-4 rounded-full bg-white" />
+        </span>
       </div>
 
       <div className="p-4 pt-3">
-        {hasAlts && (
-          <div className="ant-noscroll -mx-1 mb-3 flex gap-1.5 overflow-x-auto px-1">
-            {slot.moves.map((m) => {
-              const active = m.id === move.id
-              return (
-                <button
-                  key={m.id}
-                  onClick={() => onPick(m.id)}
-                  className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold transition ${
-                    active
-                      ? 'bg-[color:var(--acc)] text-[#0a0c11]'
-                      : 'bg-white/[0.06] text-white/65 ring-1 ring-white/10 active:bg-white/10'
-                  }`}
-                >
-                  {m.short}
-                </button>
-              )
-            })}
-          </div>
-        )}
-
-        <h3 className={`text-lg font-bold leading-tight ${done ? 'text-white/50 line-through decoration-white/30' : ''}`}>
-          {move.name}
-        </h3>
+        <h3 className="text-lg font-bold leading-tight">{move.name}</h3>
         {move.sub && <p className="mt-0.5 text-sm text-white/50">{move.sub}</p>}
 
         <p className="mt-3 flex items-start gap-2 text-xs font-medium text-white/75">
@@ -578,12 +485,6 @@ function SlotCard({
           {move.target}
         </p>
         <p className="mt-2 text-sm leading-relaxed text-white/55">{move.cue}</p>
-
-        {hasAlts && (
-          <p className="mt-3 text-[11px] text-white/35">
-            {slot.moves.length} seçenekten birini yap
-          </p>
-        )}
       </div>
     </article>
   )
