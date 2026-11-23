@@ -13,6 +13,7 @@ import Daily from './pages/Daily'
 import Transactions from './pages/Transactions'
 import Takip from './pages/Takip'
 import ParaGitti from './pages/ParaGitti'
+import Antrenman from './pages/Antrenman'
 import Trades from './pages/Trades'
 import Goals from './pages/Goals'
 import Reminders from './pages/Reminders'
@@ -53,6 +54,8 @@ export default function App() {
         <AuthProvider>
           <Routes>
             <Route path="/login" element={<Login />} />
+            {/* Bağımsız sayfa — giriş istemez, menü yok */}
+            <Route path="/antrenman" element={<Antrenman />} />
             <Route element={<Protected />}>
               <Route index element={<Dashboard />} />
               <Route path="para-gitti" element={<ParaGitti />} />
